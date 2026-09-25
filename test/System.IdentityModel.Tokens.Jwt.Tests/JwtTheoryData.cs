@@ -1,8 +1,14 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.TestUtils;
 using Microsoft.IdentityModel.Tokens;
+
+// This file exercises the obsolete JwtSecurityTokenHandler, which is the subject of this
+// test project. The suppression is file-scoped rather than per-call-site because the
+// legacy handler is the unit under test throughout.
+#pragma warning disable CS0618 // Type or member is obsolete
 
 namespace System.IdentityModel.Tokens.Jwt.Tests
 {
@@ -23,6 +29,8 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
 
         public string Token { get; set; }
 
+        public JsonWebToken JsonWebToken { get; set; }
+
         public SecurityTokenDescriptor TokenDescriptor { get; set; }
 
         public JwtSecurityTokenHandler TokenHandler { get; set; } = new JwtSecurityTokenHandler();
@@ -34,5 +42,11 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
         public string TokenTypeHeader { get; set; }
 
         public bool ShouldSetLastKnownConfiguration { get; set; }
+
+        public bool SetupIssuerLkg { get; set; }
+
+        public BaseConfigurationManager SetupIssuerLkgConfigurationManager { get; set; }
+
+        internal bool DoNotScrubErrorMessages { get; set; }
     }
 }

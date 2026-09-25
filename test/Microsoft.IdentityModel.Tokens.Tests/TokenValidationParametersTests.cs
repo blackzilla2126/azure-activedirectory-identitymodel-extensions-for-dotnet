@@ -15,7 +15,12 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 {
     public class TokenValidationParametersTests
     {
-        int ExpectedPropertyCount = 59;
+        int ExpectedPropertyCount = 64;
+
+        // GetSets() compares the total property count which includes internal properties, against a list of public properties, minus delegates.
+        // This allows us to keep track of any properties we are including in the total that are not public nor delegates.
+        // Remove if/once we make TimeProvider public. As the GetSets() test will fail.
+        List<string> internalNonDelegateProperties = new() { "TimeProvider" };
 
         [Fact]
         public void Publics()
@@ -24,7 +29,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             Type type = typeof(TokenValidationParameters);
             PropertyInfo[] properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
             if (properties.Length != ExpectedPropertyCount)
-                Assert.True(false, $"Number of properties has changed from {ExpectedPropertyCount} to: " + properties.Length + ", adjust tests");
+                Assert.Fail($"Number of properties has changed from {ExpectedPropertyCount} to: " + properties.Length + ", adjust tests");
 
             TokenValidationParameters actorValidationParameters = new TokenValidationParameters();
             SecurityKey issuerSigningKey = KeyingMaterial.DefaultX509Key_2048_Public;
@@ -78,6 +83,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 PropertyBag = propertyBag,
                 SignatureValidator = ValidationDelegates.SignatureValidatorReturnsJwtTokenAsIs,
                 SaveSigninToken = true,
+                TryReadJwtClaim = ValidationDelegates.TryReadJwtClaim,
                 TypeValidator = typeValidator,
                 ValidAlgorithms = validAlgorithms,
                 ValidateAudience = false,
@@ -117,6 +123,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             validationParametersSets.PropertyBag = propertyBag;
             validationParametersSets.SignatureValidator = ValidationDelegates.SignatureValidatorReturnsJwtTokenAsIs;
             validationParametersSets.SaveSigninToken = true;
+            validationParametersSets.TryReadJwtClaim = ValidationDelegates.TryReadJwtClaim;
             validationParametersSets.TypeValidator = typeValidator;
             validationParametersSets.ValidateAudience = false;
             validationParametersSets.ValidateIssuer = false;
@@ -130,7 +137,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             var compareContext = new CompareContext();
             IdentityComparer.AreEqual(validationParametersInline, validationParametersSets, compareContext);
 
-            // only exlude 'IsClone' when comparing Clone vs. Original.
+            // only exclude 'IsClone' when comparing Clone vs. Original.
             var instanceContext = new CompareContext();
             instanceContext.PropertiesToIgnoreWhenComparing.Add(typeof(TokenValidationParameters), new List<string> { "IsClone" });
             TokenValidationParameters validationParametersInLineClone = validationParametersInline.Clone();
@@ -194,10 +201,11 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     new KeyValuePair<string, List<object>>("ActorValidationParameters", new List<object>{(TokenValidationParameters)null, new TokenValidationParameters(), new TokenValidationParameters()}),
                     new KeyValuePair<string, List<object>>("AuthenticationType", new List<object>{(string)null, Guid.NewGuid().ToString(), Guid.NewGuid().ToString()}),
                     new KeyValuePair<string, List<object>>("ClockSkew", new List<object>{TokenValidationParameters.DefaultClockSkew, TimeSpan.FromHours(2), TimeSpan.FromMinutes(1)}),
-                    new KeyValuePair<string, List<object>>("ConfigurationManager", new List<object>{(BaseConfigurationManager)null, new ConfigurationManager<OpenIdConnectConfiguration>("http://someaddress.com", new OpenIdConnectConfigurationRetriever()), new ConfigurationManager<WsFederationConfiguration>("http://someaddress.com", new WsFederationConfigurationRetriever()) }),
+                    new KeyValuePair<string, List<object>>("ConfigurationManager", new List<object>{(BaseConfigurationManager)null, new ConfigurationManager<OpenIdConnectConfiguration>("http://127.0.0.1", new OpenIdConnectConfigurationRetriever()), new ConfigurationManager<WsFederationConfiguration>("http://127.0.0.1", new WsFederationConfigurationRetriever()) }),
                     new KeyValuePair<string, List<object>>("CryptoProviderFactory", new List<object>{(CryptoProviderFactory)null, new CryptoProviderFactory(), new CryptoProviderFactory() }),
                     new KeyValuePair<string, List<object>>("DebugId", new List<object>{(string)null, "DebugId", "DebugId" }),
                     new KeyValuePair<string, List<object>>("IgnoreTrailingSlashWhenValidatingAudience",  new List<object>{true, false, true}),
+                    new KeyValuePair<string, List<object>>("IgnoreCaseWhenValidatingAudience",  new List<object>{false, true, false}),
                     new KeyValuePair<string, List<object>>("IncludeTokenOnFailedValidation",  new List<object>{false, true, true}),
                     new KeyValuePair<string, List<object>>("IsClone",  new List<object>{ false, true, true }),
                     new KeyValuePair<string, List<object>>("InstancePropertyBag",  new List<object>{ new Dictionary<string, object>(), new Dictionary<string, object>(), new Dictionary<string, object>()}),
@@ -216,6 +224,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     new KeyValuePair<string, List<object>>("TokenDecryptionKey", new List<object>{(SecurityKey)null, KeyingMaterial.DefaultX509Key_2048, KeyingMaterial.RsaSecurityKey_2048}),
                     new KeyValuePair<string, List<object>>("TokenDecryptionKeys", new List<object>{(IEnumerable<SecurityKey>)null, new List<SecurityKey>{KeyingMaterial.DefaultX509Key_2048, KeyingMaterial.RsaSecurityKey_1024}, new List<SecurityKey>()}),
                     new KeyValuePair<string, List<object>>("TokenReplayCache", new List<object>{(ITokenReplayCache)null, new TokenReplayCache(), new TokenReplayCache()}),
+                    new KeyValuePair<string, List<object>>("TryAllDecryptionKeys", new List<object>{true, false, true}),
                     new KeyValuePair<string, List<object>>("TryAllIssuerSigningKeys", new List<object>{true, false, true}),
                     new KeyValuePair<string, List<object>>("ValidateActor", new List<object>{false, true, false}),
                     new KeyValuePair<string, List<object>>("ValidAlgorithms", new List<object>{(IEnumerable<string>)null, new List<string>{Guid.NewGuid().ToString()}, new List<string>{Guid.NewGuid().ToString()}}),
@@ -235,8 +244,8 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 Object = validationParameters,
             };
 
-            // check that we have checked all properties, subract the number of delegates.
-            if (context.PropertyNamesAndSetGetValue.Count != ExpectedPropertyCount - delegates.Count)
+            // check that we have checked all properties, subtract the number of delegates.
+            if (context.PropertyNamesAndSetGetValue.Count != ExpectedPropertyCount - delegates.Count - internalNonDelegateProperties.Count)
                 compareContext.AddDiff($"Number of properties being set is: {context.PropertyNamesAndSetGetValue.Count}, number of properties is: {properties.Length - delegates.Count} (#Properties - #Delegates), adjust tests");
 
             TestUtilities.GetSet(context);
@@ -264,18 +273,26 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             var compareContext = new CompareContext();
 
             TokenValidationParameters validationParameters = CreateTokenValidationParameters();
-           
+
             compareContext.PropertiesToIgnoreWhenComparing.Add(typeof(TokenValidationParameters), new List<string> { "InstancePropertyBag", "IsClone" });
             TokenValidationParameters validationParametersClone = validationParameters.Clone();
             IdentityComparer.AreEqual(validationParametersClone, validationParameters, compareContext);
             if (validationParameters.IsClone)
-                compareContext.AddDiff("if (validationParameters.IsClone), IsCone should be false");
+                compareContext.AddDiff("if (validationParameters.IsClone), IsClone should be false");
 
             if (!validationParametersClone.IsClone)
-                compareContext.AddDiff("if (!validationParametersClone.IsClone), IsCone should be true");
+                compareContext.AddDiff("if (!validationParametersClone.IsClone), IsClone should be true");
 
             if (validationParametersClone.InstancePropertyBag.Count != 0)
                 compareContext.AddDiff("validationParametersClone.InstancePropertyBag.Count != 0), should be empty.");
+
+            validationParameters.AlgorithmValidator = ValidationDelegates.AlgorithmValidatorBuilder(false);
+            if (validationParameters.AlgorithmValidator.Equals(validationParametersClone.AlgorithmValidator))
+                compareContext.AddDiff("validationParameters.AlgorithmValidator.Equals(validationParametersClone.AlgorithmValidator)), should not be equal after change.");
+
+            validationParameters.AudienceValidator = ValidationDelegates.AudienceValidatorReturnsFalse;
+            if (validationParameters.AudienceValidator.Equals(validationParametersClone.AudienceValidator))
+                compareContext.AddDiff("validationParameters.AudienceValidator.Equals(validationParametersClone.AudienceValidator)), should not be equal after change.");
 
             TestUtilities.AssertFailIfErrors(compareContext);
         }
@@ -291,7 +308,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             validationParameters.IssuerSigningKeyValidator = ValidationDelegates.IssuerSigningKeyValidator;
             validationParameters.IssuerSigningKeyValidatorUsingConfiguration = ValidationDelegates.IssuerSigningKeyValidatorUsingConfiguration;
             validationParameters.IssuerValidator = ValidationDelegates.IssuerValidatorEcho;
-            validationParameters.IssuerValidatorAsync = ValidationDelegates.IssuerValidatorAsync;
+            validationParameters.IssuerValidatorAsync = ValidationDelegates.IssuerValidatorInternalAsync;
             validationParameters.IssuerValidatorUsingConfiguration = ValidationDelegates.IssuerValidatorUsingConfigEcho;
             validationParameters.LifetimeValidator = ValidationDelegates.LifetimeValidatorReturnsTrue;
             validationParameters.NameClaimTypeRetriever = ValidationDelegates.NameClaimTypeRetriever;
@@ -302,7 +319,9 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             validationParameters.TokenReader = ValidationDelegates.TokenReaderReturnsJsonWebToken;
             validationParameters.TokenReplayValidator = ValidationDelegates.TokenReplayValidatorReturnsTrue;
             validationParameters.TransformBeforeSignatureValidation = ValidationDelegates.TransformBeforeSignatureValidation;
+            validationParameters.TryReadJwtClaim = ValidationDelegates.TryReadJwtClaim;
             validationParameters.TypeValidator = ValidationDelegates.TypeValidator;
+            validationParameters.ActClaimRetriever = ValidationDelegates.ActClaimRetriever;
 
             validationParameters.ActorValidationParameters = new TokenValidationParameters();
             validationParameters.ClockSkew = TimeSpan.FromSeconds(42);

@@ -18,10 +18,12 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// <summary>
         /// SecurityTokenDescriptor.CryptoProviderFactory has priority over SecurityKey.CryptoProviderFactory
         /// </summary>
-        [Theory, MemberData(nameof(SecurityTokenDescriptorDataSet))]
+        [Theory, MemberData(nameof(SecurityTokenDescriptorDataSet), DisableDiscoveryEnumeration = true)]
         public void CryptoProviderOrderingWhenSigning(SecurityTokenDescriptor tokenDescriptor)
         {
+#pragma warning disable CS0618 // Type or member is obsolete
             var tokenHandler = new JwtSecurityTokenHandler();
+#pragma warning restore CS0618 // Type or member is obsolete
             var jwt = tokenHandler.CreateEncodedJwt(tokenDescriptor);
 
             if (tokenDescriptor.SigningCredentials.CryptoProviderFactory == null)
@@ -80,11 +82,13 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// <summary>
         /// TokenValidationParameters.CryptoProviderFactory has priority over SecurityKey.CryptoProviderFactory
         /// </summary>
-        [Theory, MemberData(nameof(SigningCredentialsDataSet))]
+        [Theory, MemberData(nameof(SigningCredentialsDataSet), DisableDiscoveryEnumeration = true)]
         public void CryptoProviderOrderingWhenVerifying(string testId, TokenValidationParameters validationParameters, string jwt)
         {
             TestUtilities.WriteHeader("CryptoProviderOrderingWhenVerifying - " + testId, true);
+#pragma warning disable CS0618 // Type or member is obsolete
             var tokenHandler = new JwtSecurityTokenHandler();
+#pragma warning restore CS0618 // Type or member is obsolete
             SecurityToken token = null;
             tokenHandler.ValidateToken(jwt, validationParameters, out token);
 
@@ -163,7 +167,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 CryptoProviderFactory.Default.CreateHashAlgorithm(algorithm);
                 ee.ProcessNoException();
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 ee.ProcessException(ex);
             }
@@ -212,7 +216,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             Assert.False(customHashAlgorithm.DisposeCalled, "customHashAlgorithm.DisposeCalled");
         }
 
-        [Theory, MemberData(nameof(CreateSignatureProviderExtensibilityTheoryData))]
+        [Theory, MemberData(nameof(CreateSignatureProviderExtensibilityTheoryData), DisableDiscoveryEnumeration = true)]
         public void CreateSignatureProviderExtensibility(CryptoProviderFactoryTheoryData theoryData)
         {
             var context = TestUtilities.WriteHeader($"{this}.CreateSignatureProviderExtensibility", theoryData);

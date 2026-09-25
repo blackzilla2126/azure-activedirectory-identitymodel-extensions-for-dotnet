@@ -11,7 +11,7 @@ namespace Microsoft.IdentityModel.JsonWebTokens
         // This is the short to long mapping.
         // key is the long claim type
         // value is the short claim type
-        private static Dictionary<string, string> shortToLongClaimTypeMapping = new Dictionary<string, string>
+        private static readonly Dictionary<string, string> shortToLongClaimTypeMapping = new Dictionary<string, string>
         {
             { JwtRegisteredClaimNames.Actort, ClaimTypes.Actor },
             { JwtRegisteredClaimNames.Birthdate, ClaimTypes.DateOfBirth },
@@ -70,6 +70,7 @@ namespace Microsoft.IdentityModel.JsonWebTokens
             { "endpointpath", "http://schemas.microsoft.com/2012/01/requestcontext/claims/x-ms-endpoint-absolute-path" },
             { "forwardedclientip", "http://schemas.microsoft.com/2012/01/requestcontext/claims/x-ms-forwarded-client-ip" },
             { "group", "http://schemas.xmlsoap.org/claims/Group" },
+            { "groups", "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups"},
             { "groupsid", ClaimTypes.GroupSid },
             { "idp", "http://schemas.microsoft.com/identity/claims/identityprovider" },
             { "insidecorporatenetwork", "http://schemas.microsoft.com/ws/2012/01/insidecorporatenetwork" },
@@ -88,8 +89,8 @@ namespace Microsoft.IdentityModel.JsonWebTokens
             { "winaccountname", ClaimTypes.WindowsAccountName },
         };
 
-        private static IDictionary<string, string> longToShortClaimTypeMapping = new Dictionary<string, string>();
-        private static HashSet<string> inboundClaimFilter = inboundClaimFilter = new HashSet<string>();
+        private static readonly Dictionary<string, string> longToShortClaimTypeMapping = new Dictionary<string, string>();
+        private static readonly HashSet<string> inboundClaimFilter = inboundClaimFilter = new HashSet<string>();
 
         /// <summary>
         /// Initializes static members of the <see cref="ClaimTypeMapping"/> class. 

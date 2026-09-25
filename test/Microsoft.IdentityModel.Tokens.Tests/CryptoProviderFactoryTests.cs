@@ -29,7 +29,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// <summary>
         /// This test checks that SignatureProviders are properly created and released when CryptoProviderFactory.CacheSignatureProviders = false.
         /// </summary>
-        [Theory, MemberData(nameof(CreateAndReleaseSignatureProvidersTheoryData))]
+        [Theory, MemberData(nameof(CreateAndReleaseSignatureProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void CreateAndReleaseSignatureProviders(SignatureProviderTheoryData theoryData)
         {
             var context = TestUtilities.WriteHeader($"{this}.CreateAndReleaseSignatureProvidersTheoryData", theoryData);
@@ -47,13 +47,13 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 {
                     var disposeCalled = GetSignatureProviderIsDisposedByReflect(signatureProvider);
                     if (!disposeCalled)
-                        context.Diffs.Add("Dispose wasn't called on the AsymmetricSignatureProvider.");
+                        context.Diffs.Add("Dispose was supposed to be called on the AsymmetricSignatureProvider.");
                 }
                 else // signatureProvider.GetType().Equals(typeof(SymmetricSignatureProvider))
                 {
                     var disposeCalled = GetSignatureProviderIsDisposedByReflect(signatureProvider);
                     if (!disposeCalled)
-                        context.Diffs.Add("Dispose wasn't called on the SymmetricSignatureProvider.");
+                        context.Diffs.Add("Dispose was supposed to be called on the SymmetricSignatureProvider.");
                 }
             }
             catch (Exception ex)
@@ -129,8 +129,8 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 
             Type type = typeof(CryptoProviderFactory);
             PropertyInfo[] properties = type.GetProperties();
-            if (properties.Length != 7)
-                Assert.True(false, "Number of public fields has changed from 7 to: " + properties.Length + ", adjust tests");
+            if (properties.Length != 8)
+                Assert.Fail("Number of public fields has changed from 8 to: " + properties.Length + ", adjust tests");
 
             CustomCryptoProvider customCryptoProvider = new CustomCryptoProvider();
             GetSetContext getSetContext =
@@ -140,6 +140,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     {
                         new KeyValuePair<string, List<object>>("SignatureProviderObjectPoolCacheSize", new List<object>{CryptoProviderFactory.DefaultSignatureProviderObjectPoolCacheSize, 20, 10}),
                         new KeyValuePair<string, List<object>>("CacheSignatureProviders", new List<object>{CryptoProviderFactory.DefaultCacheSignatureProviders, false, true}),
+                        new KeyValuePair<string, List<object>>("CacheCustomProviders", new List<object>{false, true, false}),
                         new KeyValuePair<string, List<object>>("CustomCryptoProvider", new List<object>{(ICryptoProvider)null, customCryptoProvider, null}),
                     },
                     Object = cryptoProviderFactory,
@@ -185,7 +186,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// Tests that SymmetricSignatureProviders that fault will be removed from cache
         /// </summary>
         /// <param name="theoryData"></param>
-        [Theory, MemberData(nameof(FaultingAsymmetricSignatureProvidersTheoryData))]
+        [Theory, MemberData(nameof(FaultingAsymmetricSignatureProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void FaultingAsymmetricSignatureProviders(SignatureProviderTheoryData theoryData)
         {
             IdentityModelEventSource.ShowPII = true;
@@ -279,11 +280,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 theoryData.Add(new SignatureProviderTheoryData
                 {
                     First = true,
-#if NET452
-                    ExpectedException = EE.CryptographicException(),
-#else
-                    ExpectedException = new EE(typeof(Exception)){IgnoreExceptionType = true},
-#endif
+                    ExpectedException = new EE(typeof(Exception)) { IgnoreExceptionType = true },
                     CryptoProviderFactory = new CustomCryptoProviderFactory(new string[] { ALG.RsaSha256 })
                     {
                         SigningSignatureProvider = signingSignatureProvider
@@ -307,7 +304,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// Tests that SymmetricSignatureProviders that fault will be removed from cache
         /// </summary>
         /// <param name="theoryData"></param>
-        [Theory, MemberData(nameof(FaultingSymmetricSignatureProvidersTheoryData))]
+        [Theory, MemberData(nameof(FaultingSymmetricSignatureProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void FaultingSymmetricSignatureProviders(SignatureProviderTheoryData theoryData)
         {
             IdentityModelEventSource.ShowPII = true;
@@ -319,7 +316,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 var signingSignatureProvider = theoryData.CryptoProviderFactory.CreateForSigning(theoryData.SigningKey, theoryData.SigningAlgorithm) as SymmetricSignatureProvider;
                 var signedBytes = signingSignatureProvider.Sign(bytes);
                 var verifyingSignatureProvider = theoryData.CryptoProviderFactory.CreateForVerifying(theoryData.VerifyKey, theoryData.VerifyAlgorithm) as SymmetricSignatureProvider;
-                if (theoryData.VerifySpecifyingLength)
+                if (theoryData.VerifyUsingLength)
                     verifyingSignatureProvider.Verify(bytes, signedBytes);
                 else
                     verifyingSignatureProvider.Verify(bytes, signedBytes, signedBytes.Length);
@@ -430,7 +427,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     VerifyAlgorithm = ALG.HmacSha256,
                     VerifyKey = Default.SymmetricSigningKey256,
                     VerifySignatureProviderType = typeof(CustomSymmetricSignatureProvider).ToString(),
-                    VerifySpecifyingLength = true
+                    VerifyUsingLength = true
                 });
 
                 // Symmetric disposed signing
@@ -500,7 +497,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     VerifyAlgorithm = ALG.HmacSha256,
                     VerifyKey = Default.SymmetricSigningKey256,
                     VerifySignatureProviderType = typeof(CustomSymmetricSignatureProvider).ToString(),
-                    VerifySpecifyingLength = true
+                    VerifyUsingLength = true
                 });
 
                 // Symmetric signing verifying succeed
@@ -522,7 +519,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     VerifyAlgorithm = ALG.HmacSha256,
                     VerifyKey = Default.SymmetricSigningKey256,
                     VerifySignatureProviderType = typeof(CustomSymmetricSignatureProvider).ToString(),
-                    VerifySpecifyingLength = false
+                    VerifyUsingLength = false
                 });
 
                 // Symmetric signing verifying (specifying length) succeed
@@ -544,14 +541,14 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     VerifyAlgorithm = ALG.HmacSha256,
                     VerifyKey = Default.SymmetricSigningKey256,
                     VerifySignatureProviderType = typeof(CustomSymmetricSignatureProvider).ToString(),
-                    VerifySpecifyingLength = true
+                    VerifyUsingLength = true
                 });
 
                 return theoryData;
             }
         }
 
-        [Theory, MemberData(nameof(ReleaseSignatureProvidersTheoryData))]
+        [Theory, MemberData(nameof(ReleaseSignatureProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void ReleaseSignatureProviders(SignatureProviderTheoryData theoryData)
         {
             var context = TestUtilities.WriteHeader($"{this}.ReleaseSignatureProviders", theoryData);
@@ -640,7 +637,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             }
         }
 
-        [Theory, MemberData(nameof(ReleaseHashAlgorithmsTheoryData))]
+        [Theory, MemberData(nameof(ReleaseHashAlgorithmsTheoryData), DisableDiscoveryEnumeration = true)]
         public void ReleaseHashAlgorithms(CryptoProviderFactoryTheoryData theoryData)
         {
             IdentityModelEventSource.ShowPII = true;
@@ -695,7 +692,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             }
         }
 
-        [Theory, MemberData(nameof(ReleaseKeyWrapProvidersTheoryData))]
+        [Theory, MemberData(nameof(ReleaseKeyWrapProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void ReleaseKeyWrapProviders(CryptoProviderFactoryTheoryData theoryData)
         {
             IdentityModelEventSource.ShowPII = true;
@@ -752,7 +749,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             }
         }
 
-        [Theory, MemberData(nameof(ReleaseRsaKeyWrapProvidersTheoryData))]
+        [Theory, MemberData(nameof(ReleaseRsaKeyWrapProvidersTheoryData), DisableDiscoveryEnumeration = true)]
         public void ReleaseRsaKeyWrapProviders(CryptoProviderFactoryTheoryData theoryData)
         {
             IdentityModelEventSource.ShowPII = true;
@@ -814,7 +811,9 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         {
             TestUtilities.WriteHeader($"{this}.ShouldCacheSignatureProvider");
             var context = new CompareContext($"{this}.ShouldCacheSignatureProvider");
-            var signingKeyWithEmptyKid = new CustomRsaSecurityKey(1024, PrivateKeyStatus.Exists, KM.RsaParameters_1024);
+            // 2048-bit key: this test exercises the empty-kid caching path, not key-size policy;
+            // the RS256 signing floor (2048 bits) is enforced in the AsymmetricSignatureProvider constructor.
+            var signingKeyWithEmptyKid = new CustomRsaSecurityKey(2048, PrivateKeyStatus.Exists, KM.RsaParameters_2048);
             var signatureProvider = CryptoProviderFactory.Default.CreateForSigning(signingKeyWithEmptyKid, ALG.RsaSha256Signature);
             if (CryptoProviderFactory.Default.CryptoProviderCache.TryGetSignatureProvider(signingKeyWithEmptyKid, ALG.RsaSha256Signature, typeof(AsymmetricSignatureProvider).ToString(), true, out var _))
                 context.Diffs.Add("A SignatureProvider was added to CryptoProviderFactory.CryptoProviderCache, but ShouldCacheSignatureProvider() should return false as the key has an empty key id.");
@@ -921,14 +920,14 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 
             cryptoProviderFactory.ReleaseSignatureProvider(signing);
 
-            if (!GetSignatureProviderIsDisposedByReflect(signing))
-                context.AddDiff($"{nameof(signing2)} should have been disposed");
+            if (GetSignatureProviderIsDisposedByReflect(signing))
+                context.AddDiff($"{nameof(signing)} should not have been disposed");
 
             TestUtilities.AssertFailIfErrors(context);
         }
 
-        [Fact (Skip = "too long")]
-        public void ReferenceCountingTest_MultiThreaded()
+        [Fact]
+        public async Task ReferenceCountingTest_MultiThreaded()
         {
             var context = new CompareContext($"{this}.ReferenceCountingTest_MultiThreaded");
             var cryptoProviderFactory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting());
@@ -961,7 +960,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 });
             }
 
-            Task.WaitAll(tasks);
+            await Task.WhenAll(tasks);
 
             cryptoProviderFactory.CacheSignatureProviders = false;
 
@@ -1109,7 +1108,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     KeyingMaterial.DefaultSymmetricEncryptingCreds_Aes128_Sha2.Key,
                     KeyingMaterial.DefaultSymmetricEncryptingCreds_Aes128_Sha2.Alg,
                     KeyingMaterial.DefaultSymmetricEncryptingCreds_Aes128_Sha2.Enc)
-                    { CryptoProviderFactory = cryptoProviderFactory });
+            { CryptoProviderFactory = cryptoProviderFactory });
 
             JwtPayload payload = new JwtPayload("IssuerName", "Audience", testClaims, DateTime.Now.AddHours(-1), DateTime.Now.AddHours(1), DateTime.Now.AddHours(-1));
             var token = new JwtSecurityToken(header, payload);
@@ -1118,7 +1117,9 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             token.Header[JwtHeaderParameterNames.X5t] = certHash;
             token.Header[JwtHeaderParameterNames.Kid] = certHash;
 
+#pragma warning disable CS0618 // Type or member is obsolete
             var handler = new JwtSecurityTokenHandler();
+#pragma warning restore CS0618 // Type or member is obsolete
             _ = handler.WriteToken(token);
 
             // Dispose() should stop the event queue task if it is running.
@@ -1160,7 +1161,9 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             token.Header[JwtHeaderParameterNames.X5t] = certHash;
             token.Header[JwtHeaderParameterNames.Kid] = certHash;
 
+#pragma warning disable CS0618 // Type or member is obsolete
             var handler = new JwtSecurityTokenHandler();
+#pragma warning restore CS0618 // Type or member is obsolete
             _ = handler.WriteToken(token);
 
             // Dispose() should stop the event queue task if it is running.
@@ -1217,7 +1220,8 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         /// <summary>
         /// Thread proc that creates and removes providers.
         /// </summary>
-        /// <param name="obj">func creating providers (signing and verifying)</param>
+        /// <param name="factory">The input to the <paramref name="func"/>.</param>
+        /// <param name="func">func creating providers (signing and verifying).</param>
         private static void ThreadStartProcAddAndRemoveProviders(CryptoProviderFactory factory, CreateProvidersFunc func)
         {
             var cache = factory.CryptoProviderCache as InMemoryCryptoProviderCache;
@@ -1274,6 +1278,340 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 
         private static bool GetSignatureProviderIsDisposedByReflect(SignatureProvider signatureProvider) =>
             (bool)signatureProvider.GetType().GetField("_disposed", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(signatureProvider);
+
+        [Fact]
+        public void CacheCustomProviders_WhenEnabled_CachesProviderFromCustomCryptoProvider()
+        {
+            // Arrange
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "test-cache-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                createCount++;
+                return new SymmetricSignatureProvider(signingKey, algorithm, false);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = true
+            };
+
+            // Act — first call creates and should cache
+            var provider1 = factory.CreateForVerifying(signingKey, algorithm);
+
+            // Debug: verify the cache state directly
+            string providerType = provider1.GetType().ToString();
+            string internalId = signingKey.InternalId;
+
+            Assert.True(internalId.Length > 0,
+                $"Key InternalId should not be empty, got: '{internalId}'");
+            Assert.True(provider1.IsCached,
+                $"Provider should be marked as cached. IsCached={provider1.IsCached}");
+
+            // Try to retrieve directly from the cache to isolate the issue
+            bool tryGetResult = factory.CryptoProviderCache.TryGetSignatureProvider(
+                signingKey, algorithm, providerType, false, out var fromCache);
+
+            // Debug: manually compute the cache keys to compare
+            string addKey = $"{provider1.Key.GetType()}-{provider1.Key.InternalId}-{provider1.Algorithm}-{provider1.GetType()}";
+            string getKey = $"{signingKey.GetType()}-{signingKey.InternalId}-{algorithm}-{providerType}";
+            
+            Assert.True(tryGetResult,
+                $"TryGetSignatureProvider failed. " +
+                $"addKey='{addKey}', " +
+                $"getKey='{getKey}', " +
+                $"keysMatch={addKey == getKey}, " +
+                $"createCount={createCount}");
+
+            Assert.Same(provider1, fromCache);
+        }
+
+        [Fact]
+        public void CacheCustomProviders_WhenDisabled_CreatesNewProviderEachTime()
+        {
+            // Arrange
+            var signingKey = KeyingMaterial.DefaultSymmetricSigningCreds_256_Sha2.Key;
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                createCount++;
+                return new SymmetricSignatureProvider(signingKey, algorithm);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = false, // default
+                CacheSignatureProviders = true
+            };
+
+            // Act
+            var provider1 = factory.CreateForVerifying(signingKey, algorithm);
+            var provider2 = factory.CreateForVerifying(signingKey, algorithm);
+
+            // Assert — Create called each time, providers are not the same
+            Assert.Equal(2, createCount);
+            Assert.NotSame(provider1, provider2);
+        }
+
+        [Fact]
+        public void CacheCustomProviders_WhenCacheSignatureProvidersDisabled_DoesNotCache()
+        {
+            // Arrange — CacheCustomProviders = true but CacheSignatureProviders = false
+            // The master switch overrides the sub-switch.
+            var signingKey = KeyingMaterial.DefaultSymmetricSigningCreds_256_Sha2.Key;
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                createCount++;
+                return new SymmetricSignatureProvider(signingKey, algorithm);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = false // master switch off
+            };
+
+            // Act
+            var provider1 = factory.CreateForVerifying(signingKey, algorithm);
+            var provider2 = factory.CreateForVerifying(signingKey, algorithm);
+
+            // Assert — Create called each time despite CacheCustomProviders = true
+            Assert.Equal(2, createCount);
+        }
+
+        /// <summary>
+        /// A custom crypto provider that counts how many times Create and Release are called.
+        /// </summary>
+        private class CountingCryptoProvider : ICryptoProvider
+        {
+            private readonly string _algorithm;
+            private readonly Func<SignatureProvider> _factory;
+
+            public CountingCryptoProvider(string algorithm, Func<SignatureProvider> factory)
+            {
+                _algorithm = algorithm;
+                _factory = factory;
+            }
+
+            public int ReleaseCount;
+
+            public bool IsSupportedAlgorithm(string algorithm, params object[] args) =>
+                algorithm == _algorithm;
+
+            public object Create(string algorithm, params object[] args) =>
+                _factory();
+
+            public void Release(object cryptoInstance)
+            {
+                Interlocked.Increment(ref ReleaseCount);
+            }
+        }
+
+        [Fact]
+        public void CacheCustomProviders_ConcurrentAccess_AllThreadsGetSameProvider()
+        {
+            // Arrange
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "concurrent-test-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                Interlocked.Increment(ref createCount);
+                return new SymmetricSignatureProvider(signingKey, algorithm, false);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = true
+            };
+
+            // Warm the cache with an initial call so the provider type is known
+            // and the provider is in the cache.
+            var warmup = factory.CreateForVerifying(signingKey, algorithm);
+            Assert.True(warmup.IsCached, "Warmup provider should be cached.");
+            int warmupCreateCount = createCount;
+
+            // Act — launch many concurrent calls
+            int threadCount = 20;
+            var providers = new SignatureProvider[threadCount];
+            var barrier = new System.Threading.Barrier(threadCount);
+
+            Parallel.For(0, threadCount, i =>
+            {
+                barrier.SignalAndWait(); // synchronize start
+                providers[i] = factory.CreateForVerifying(signingKey, algorithm);
+            });
+
+            // Assert — all threads should get the same cached instance
+            for (int i = 0; i < threadCount; i++)
+            {
+                Assert.Same(warmup, providers[i]);
+            }
+
+            // Create should not have been called again after warmup (all cache hits)
+            Assert.Equal(warmupCreateCount, createCount);
+        }
+
+        [Fact]
+        public void ReleaseSignatureProvider_CachedCustomProvider_DoesNotCallCustomRelease()
+        {
+            // Arrange — create a cached custom provider, then release it.
+            // CustomCryptoProvider.Release should NOT be called because the provider is still in the cache.
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "release-cached-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                Interlocked.Increment(ref createCount);
+                return new SymmetricSignatureProvider(signingKey, algorithm, false);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = true
+            };
+
+            // Act
+            var provider = factory.CreateForVerifying(signingKey, algorithm);
+            Assert.True(provider.IsCached, "Provider should be cached.");
+
+            factory.ReleaseSignatureProvider(provider);
+
+            // Assert — Release should NOT have been called on the custom crypto provider
+            Assert.Equal(0, customCrypto.ReleaseCount);
+        }
+
+        [Fact]
+        public void ReleaseSignatureProvider_NonCachedCustomProvider_CallsCustomRelease()
+        {
+            // Arrange — create a non-cached custom provider, then release it.
+            // CustomCryptoProvider.Release SHOULD be called because the provider is not in the cache.
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "release-noncached-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                Interlocked.Increment(ref createCount);
+                return new SymmetricSignatureProvider(signingKey, algorithm, false);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = false, // not caching
+                CacheSignatureProviders = true
+            };
+
+            // Act
+            var provider = factory.CreateForVerifying(signingKey, algorithm);
+            Assert.False(provider.IsCached, "Provider should NOT be cached.");
+
+            factory.ReleaseSignatureProvider(provider);
+
+            // Assert — Release SHOULD have been called on the custom crypto provider
+            Assert.Equal(1, customCrypto.ReleaseCount);
+        }
+
+        [Fact]
+        public void CacheCustomProviders_CreateForSigning_CachesAndReturnsFromCache()
+        {
+            // Arrange — verify the CreateForSigning path also uses the cache
+            // (all other tests use CreateForVerifying). Also verifies that calling
+            // the factory a second time returns the same cached instance (suggestion 2).
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "signing-cache-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                Interlocked.Increment(ref createCount);
+                return new SymmetricSignatureProvider(signingKey, algorithm, true);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = true
+            };
+
+            // Act — first call creates and caches; second call should hit the cache
+            var provider1 = factory.CreateForSigning(signingKey, algorithm);
+            var provider2 = factory.CreateForSigning(signingKey, algorithm);
+
+            // Assert — same instance returned, Create called only once
+            Assert.True(provider1.IsCached, "Provider should be cached.");
+            Assert.Same(provider1, provider2);
+            Assert.Equal(1, createCount);
+        }
+
+        [Fact]
+        public void CacheCustomProviders_WhenCacheProviderParamFalse_DoesNotCache()
+        {
+            // Arrange — CacheCustomProviders = true but the overload is called
+            // with cacheProvider = false, so the provider should NOT be cached.
+            var signingKey = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256)
+            {
+                KeyId = "nocache-param-kid"
+            };
+            var algorithm = SecurityAlgorithms.HmacSha256;
+
+            int createCount = 0;
+            var customCrypto = new CountingCryptoProvider(algorithm, () =>
+            {
+                Interlocked.Increment(ref createCount);
+                return new SymmetricSignatureProvider(signingKey, algorithm, false);
+            });
+
+            var factory = new CryptoProviderFactory(CryptoProviderCacheTests.CreateCacheForTesting())
+            {
+                CustomCryptoProvider = customCrypto,
+                CacheCustomProviders = true,
+                CacheSignatureProviders = true
+            };
+
+            // Act — pass cacheProvider: false explicitly
+            var provider1 = factory.CreateForVerifying(signingKey, algorithm, cacheProvider: false);
+            var provider2 = factory.CreateForVerifying(signingKey, algorithm, cacheProvider: false);
+
+            // Assert — provider is NOT cached, Create called each time
+            Assert.False(provider1.IsCached, "Provider should NOT be cached when cacheProvider=false.");
+            Assert.NotSame(provider1, provider2);
+            Assert.Equal(2, createCount);
+        }
     }
 }
 #pragma warning restore CS3016 // Arrays as attribute arguments is not CLS-compliant

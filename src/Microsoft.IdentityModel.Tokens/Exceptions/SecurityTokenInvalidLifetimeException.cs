@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.Serialization;
+using Microsoft.IdentityModel.Tokens.Experimental;
 
 namespace Microsoft.IdentityModel.Tokens
 {
@@ -42,7 +43,7 @@ namespace Microsoft.IdentityModel.Tokens
         /// <summary>
         /// Initializes a new instance of the <see cref="SecurityTokenInvalidLifetimeException"/> class.
         /// </summary>
-        /// <param name="message">Addtional information to be included in the exception and displayed to user.</param>
+        /// <param name="message">Additional information to be included in the exception and displayed to user.</param>
         public SecurityTokenInvalidLifetimeException(string message)
             : base(message)
         {
@@ -51,8 +52,8 @@ namespace Microsoft.IdentityModel.Tokens
         /// <summary>
         /// Initializes a new instance of the <see cref="SecurityTokenInvalidLifetimeException"/> class.
         /// </summary>
-        /// <param name="message">Addtional information to be included in the exception and displayed to user.</param>
-        /// <param name="innerException">A <see cref="Exception"/> that represents the root cause of the exception.</param>
+        /// <param name="message">Additional information to be included in the exception and displayed to user.</param>
+        /// <param name="innerException">An <see cref="Exception"/> that represents the root cause of the exception.</param>
         public SecurityTokenInvalidLifetimeException(string message, Exception innerException)
             : base(message, innerException)
         {
@@ -87,6 +88,9 @@ namespace Microsoft.IdentityModel.Tokens
         }
 
         /// <inheritdoc/>
+#if NET8_0_OR_GREATER
+        [Obsolete("Formatter-based serialization is obsolete", DiagnosticId = "SYSLIB0051")]
+#endif
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);
@@ -97,5 +101,28 @@ namespace Microsoft.IdentityModel.Tokens
             if (Expires.HasValue)
                 info.AddValue(_ExpiresKey, Expires.Value);
         }
+
+        #region Experimental
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SecurityTokenInvalidLifetimeException"/> class.
+        /// <param name="message">Additional information to be included in the exception and displayed to user.</param>
+        /// <param name="validationError">The <see cref="ValidationError"/> that is associated with the exception.</param>
+        /// </summary>
+        internal SecurityTokenInvalidLifetimeException(string message, ValidationError validationError)
+            : base(message, validationError)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SecurityTokenInvalidLifetimeException"/> class.
+        /// <param name="message">Additional information to be included in the exception and displayed to user.</param>
+        /// <param name="validationError">The <see cref="ValidationError"/> that is associated with the exception.</param>
+        /// <param name="innerException">An <see cref="Exception"/> that represents the root cause of the exception.</param>
+        /// </summary>
+        internal SecurityTokenInvalidLifetimeException(string message, ValidationError validationError, Exception innerException)
+            : base(message, validationError, innerException)
+        {
+        }
+        #endregion
     }
 }

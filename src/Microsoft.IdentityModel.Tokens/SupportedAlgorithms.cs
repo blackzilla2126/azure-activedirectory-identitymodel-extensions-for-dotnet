@@ -104,7 +104,13 @@ namespace Microsoft.IdentityModel.Tokens
             SecurityAlgorithms.EcdhEsA256kw
         };
 
-#if NET461 || NET462 || NET472 || NETSTANDARD2_0 || NET6_0
+        internal static readonly ICollection<string> MlDsaSigningAlgorithms = new Collection<string>
+        {
+            SecurityAlgorithms.MlDsa44,
+            SecurityAlgorithms.MlDsa65,
+            SecurityAlgorithms.MlDsa87
+        };
+
         /// <summary>
         /// Creating a Signature requires the use of a <see cref="HashAlgorithm"/>.
         /// This method returns the <see cref="HashAlgorithmName"/>
@@ -116,8 +122,26 @@ namespace Microsoft.IdentityModel.Tokens
         /// <exception cref="ArgumentOutOfRangeException">if <paramref name="algorithm"/> is not supported.</exception>
         internal static HashAlgorithmName GetHashAlgorithmName(string algorithm)
         {
+            if (TryGetHashAlgorithmName(algorithm, out HashAlgorithmName hashAlgorithmName))
+                return hashAlgorithmName;
+
             if (string.IsNullOrWhiteSpace(algorithm))
                 throw LogHelper.LogArgumentNullException(nameof(algorithm));
+
+            throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(algorithm), LogHelper.FormatInvariant(LogMessages.IDX10652, LogHelper.MarkAsNonPII(algorithm))));
+        }
+
+        /// <summary>
+        /// Attempts to get the <see cref="HashAlgorithmName"/> for the specified signature algorithm.
+        /// Returns <see langword="false"/> for algorithms that do not use an external hash (e.g., ML-DSA).
+        /// </summary>
+        internal static bool TryGetHashAlgorithmName(string algorithm, out HashAlgorithmName hashAlgorithmName)
+        {
+            if (string.IsNullOrWhiteSpace(algorithm))
+            {
+                hashAlgorithmName = default;
+                return false;
+            }
 
             switch (algorithm)
             {
@@ -127,7 +151,8 @@ namespace Microsoft.IdentityModel.Tokens
                 case SecurityAlgorithms.RsaSha256Signature:
                 case SecurityAlgorithms.RsaSsaPssSha256:
                 case SecurityAlgorithms.RsaSsaPssSha256Signature:
-                    return HashAlgorithmName.SHA256;
+                    hashAlgorithmName = HashAlgorithmName.SHA256;
+                    return true;
 
                 case SecurityAlgorithms.EcdsaSha384:
                 case SecurityAlgorithms.EcdsaSha384Signature:
@@ -135,7 +160,8 @@ namespace Microsoft.IdentityModel.Tokens
                 case SecurityAlgorithms.RsaSha384Signature:
                 case SecurityAlgorithms.RsaSsaPssSha384:
                 case SecurityAlgorithms.RsaSsaPssSha384Signature:
-                    return HashAlgorithmName.SHA384;
+                    hashAlgorithmName = HashAlgorithmName.SHA384;
+                    return true;
 
                 case SecurityAlgorithms.EcdsaSha512:
                 case SecurityAlgorithms.EcdsaSha512Signature:
@@ -143,12 +169,13 @@ namespace Microsoft.IdentityModel.Tokens
                 case SecurityAlgorithms.RsaSha512Signature:
                 case SecurityAlgorithms.RsaSsaPssSha512:
                 case SecurityAlgorithms.RsaSsaPssSha512Signature:
-                    return HashAlgorithmName.SHA512;
+                    hashAlgorithmName = HashAlgorithmName.SHA512;
+                    return true;
             }
 
-            throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(algorithm), LogHelper.FormatInvariant(LogMessages.IDX10652, LogHelper.MarkAsNonPII(algorithm))));
+            hashAlgorithmName = default;
+            return false;
         }
-#endif
 
         /// <summary>
         /// Creating a Signature requires the use of a <see cref="HashAlgorithm"/>.
@@ -217,7 +244,9 @@ namespace Microsoft.IdentityModel.Tokens
 
             if (key is X509SecurityKey x509Key)
             {
-                // only RSA keys are supported
+                if (x509Key.MlDsaPublicKey != null)
+                    return MlDsaSecurityKey.GetAlgorithmName(x509Key.MlDsaPublicKey.Algorithm) == algorithm;
+
                 if (x509Key.PublicKey as RSA == null)
                     return false;
 
@@ -232,12 +261,17 @@ namespace Microsoft.IdentityModel.Tokens
                     return IsSupportedEcdsaAlgorithm(algorithm);
                 else if (JsonWebAlgorithmsKeyTypes.Octet.Equals(jsonWebKey.Kty))
                     return IsSupportedSymmetricAlgorithm(algorithm);
+                else if (JsonWebAlgorithmsKeyTypes.Akp.Equals(jsonWebKey.Kty))
+                    return IsSupportedMlDsaAlgorithm(algorithm) && algorithm == jsonWebKey.Alg;
 
                 return false;
             }
 
             if (key is ECDsaSecurityKey)
                 return IsSupportedEcdsaAlgorithm(algorithm);
+
+            if (key is MlDsaSecurityKey mlDsaKey)
+                return MlDsaSecurityKey.GetAlgorithmName(mlDsaKey.MLDsa.Algorithm) == algorithm;
 
             if (key as SymmetricSecurityKey != null)
                 return IsSupportedSymmetricAlgorithm(algorithm);
@@ -290,6 +324,11 @@ namespace Microsoft.IdentityModel.Tokens
             return EcdsaSigningAlgorithms.Contains(algorithm);
         }
 
+        internal static bool IsSupportedMlDsaAlgorithm(string algorithm)
+        {
+            return MlDsaSigningAlgorithms.Contains(algorithm);
+        }
+
         internal static bool IsSupportedHashAlgorithm(string algorithm)
         {
             return HashAlgorithms.Contains(algorithm);
@@ -335,11 +374,6 @@ namespace Microsoft.IdentityModel.Tokens
 
         private static bool IsSupportedRsaPss(SecurityKey key)
         {
-#if NET45
-            // RSA-PSS is not available on .NET 4.5
-            LogHelper.LogInformation(LogMessages.IDX10692);
-            return false;
-#elif NET461 || NET462 || NET472 || NETSTANDARD2_0 || NET6_0
             // RSACryptoServiceProvider doesn't support RSA-PSS
             if (key is RsaSecurityKey rsa && rsa.Rsa is RSACryptoServiceProvider)
             {
@@ -355,9 +389,6 @@ namespace Microsoft.IdentityModel.Tokens
             {
                 return true;
             }
-#else
-            return true;
-#endif
         }
 
         internal static bool IsSupportedSymmetricAlgorithm(string algorithm)
@@ -366,5 +397,50 @@ namespace Microsoft.IdentityModel.Tokens
                 || SymmetricKeyWrapAlgorithms.Contains(algorithm)
                 || SymmetricSigningAlgorithms.Contains(algorithm);
         }
+
+        /// <summary>
+        /// Returns the maximum size in bytes for a supported signature algorithms.
+        /// The key size affects the signature size for asymmetric algorithms.
+        /// </summary>
+        /// <param name="algorithm">The security algorithm to find the maximum size.</param>
+        /// <returns>Set size for known algorithms, 2K default.</returns>
+        internal static int GetMaxByteCount(string algorithm) => algorithm switch
+        {
+            SecurityAlgorithms.HmacSha256 or
+            SecurityAlgorithms.HmacSha256Signature => 32,
+
+            SecurityAlgorithms.HmacSha384 or
+            SecurityAlgorithms.HmacSha384Signature => 48,
+
+            SecurityAlgorithms.HmacSha512 or
+            SecurityAlgorithms.HmacSha512Signature => 64,
+
+            SecurityAlgorithms.EcdsaSha256 or
+            SecurityAlgorithms.EcdsaSha256Signature or
+            SecurityAlgorithms.EcdsaSha384 or
+            SecurityAlgorithms.EcdsaSha384Signature or
+            SecurityAlgorithms.RsaSha256 or
+            SecurityAlgorithms.RsaSha256Signature or
+            SecurityAlgorithms.RsaSsaPssSha256 or
+            SecurityAlgorithms.RsaSsaPssSha256Signature or
+            SecurityAlgorithms.RsaSha384 or
+            SecurityAlgorithms.RsaSsaPssSha384 or
+            SecurityAlgorithms.RsaSsaPssSha384Signature or
+            SecurityAlgorithms.RsaSha384Signature => 512,
+
+            SecurityAlgorithms.EcdsaSha512 or
+            SecurityAlgorithms.EcdsaSha512Signature or
+            SecurityAlgorithms.RsaSha512 or
+            SecurityAlgorithms.RsaSsaPssSha512 or
+            SecurityAlgorithms.RsaSsaPssSha512Signature or
+            SecurityAlgorithms.RsaSha512Signature => 1024,
+
+            SecurityAlgorithms.MlDsa44 => 2420,
+            SecurityAlgorithms.MlDsa65 => 3309,
+            SecurityAlgorithms.MlDsa87 => 4627,
+
+            // if we don't know the algorithm, report 2K twice as big as any known algorithm.
+            _ => 2048,
+        };
     }
 }

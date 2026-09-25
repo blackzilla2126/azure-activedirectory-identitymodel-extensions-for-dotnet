@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Security.Claims;
+using System.Threading;
 using Microsoft.IdentityModel.Logging;
 
 namespace Microsoft.IdentityModel.Tokens
@@ -14,36 +16,55 @@ namespace Microsoft.IdentityModel.Tokens
     /// </summary>
     public class TokenValidationResult
     {
-        private Lazy<IDictionary<string, object>> _claims;
+        private readonly TokenValidationParameters _tokenValidationParameters;
+        private readonly TokenHandler _tokenHandler;
+
+        // Fields lazily initialized in a thread-safe manner. _claimsIdentity is protected by the _claimsIdentitySyncObj
+        // lock, and since null is a valid initialized value, _claimsIdentityInitialized tracks whether or not it's valid.
+        // _claims is constructed by reading the data from the ClaimsIdentity and is synchronized using Interlockeds
+        // to ensure only one dictionary is published in the face of concurrent access (but if there's a race condition,
+        // multiple dictionaries could be constructed, with only one published for all to see). Simiarly, _propertyBag
+        // is initalized with Interlocked to ensure only a single instance is published in the face of concurrent use.
+        // _claimsIdentityInitialized only ever transitions from false to true, and is volatile to reads/writes are not
+        // reordered relative to the other operations. The rest of the objects are not because the .NET memory model
+        // guarantees object writes are store releases and that reads won't be introduced.
+        private volatile bool _claimsIdentityInitialized;
+#if NET9_0_OR_GREATER
+        private Lock _claimsIdentitySyncObj;
+#else
+        private object _claimsIdentitySyncObj;
+#endif
         private ClaimsIdentity _claimsIdentity;
+        private Dictionary<string, object> _claims;
+        private Dictionary<string, object> _propertyBag;
         private Exception _exception;
-        private bool _hasIsValidOrExceptionBeenRead = false;
-        private bool _isValid = false;
-        private TokenValidationParameters _validationParameters;
-        private TokenHandler _tokenHandler;
+        private bool _isValid;
 
         /// <summary>
         /// Creates an instance of <see cref="TokenValidationResult"/>
         /// </summary>
         public TokenValidationResult()
         {
-            Initialize();
         }
 
         /// <summary>
-        /// This ctor is used by the JsonWebTokenHandler as part of delaying creation of ClaimsIdentity.
+        /// Initializes a new instance of <see cref="TokenValidationResult"/> using <see cref="TokenValidationParameters"/>.
         /// </summary>
-        /// <param name="securityToken"></param>
+        /// <param name="securityToken">The</param>
         /// <param name="tokenHandler"></param>
-        /// <param name="validationParameters"></param>
+        /// <param name="tokenValidationParameters"></param>
         /// <param name="issuer"></param>
-        internal TokenValidationResult(SecurityToken securityToken, TokenHandler tokenHandler, TokenValidationParameters validationParameters, string issuer)
+        /// <remarks>This constructor is used by JsonWebTokenHandler as part of delaying creation of ClaimsIdentity.</remarks>
+        internal TokenValidationResult(
+            SecurityToken securityToken,
+            TokenHandler tokenHandler,
+            TokenValidationParameters tokenValidationParameters,
+            string issuer)
         {
-            _validationParameters = validationParameters;
+            _tokenValidationParameters = tokenValidationParameters;
             _tokenHandler = tokenHandler;
             Issuer = issuer;
             SecurityToken = securityToken;
-            Initialize();
         }
 
         /// <summary>
@@ -53,10 +74,15 @@ namespace Microsoft.IdentityModel.Tokens
         {
             get
             {
-                if (!_hasIsValidOrExceptionBeenRead)
+                if (!HasValidOrExceptionWasRead)
                     LogHelper.LogWarning(LogMessages.IDX10109);
 
-                return _claims.Value;
+                if (_claims is null && ClaimsIdentity is { } ci)
+                {
+                    Interlocked.CompareExchange(ref _claims, TokenUtilities.CreateDictionaryFromClaims(ci.Claims), null);
+                }
+
+                return _claims;
             }
         }
 
@@ -67,29 +93,93 @@ namespace Microsoft.IdentityModel.Tokens
         {
             get
             {
-                if (_claimsIdentity == null)
-                    _claimsIdentity = CreateClaimsIdentity();
+                if (!_claimsIdentityInitialized)
+                {
+                    lock (ClaimsIdentitySyncObj)
+                    {
+                        return ClaimsIdentityNoLocking;
+                    }
+                }
 
                 return _claimsIdentity;
             }
             set
             {
-                _claimsIdentity = value ?? throw LogHelper.LogArgumentNullException(nameof(value));
+                if (value is null)
+                    throw LogHelper.LogArgumentNullException(nameof(value));
+
+                lock (ClaimsIdentitySyncObj)
+                {
+                    ClaimsIdentityNoLocking = value;
+                }
             }
         }
 
         /// <summary>
-        /// This call is for JWTs, SamlTokenHandler will set the ClaimsPrincipal.
+        /// Gets or sets the <see cref="_claimsIdentity"/> without synchronization. All accesses must either
+        /// be protected or used when the caller knows access is serialized.
         /// </summary>
-        /// <returns></returns>
-        private ClaimsIdentity CreateClaimsIdentity()
+        internal ClaimsIdentity ClaimsIdentityNoLocking
         {
-            if (_validationParameters != null && SecurityToken != null && _tokenHandler != null && Issuer != null)
-                return _tokenHandler.CreateClaimsIdentityInternal(SecurityToken, _validationParameters, Issuer);
+            get
+            {
+                if (!_claimsIdentityInitialized)
+                {
+                    Debug.Assert(_claimsIdentity is null);
 
-            return null;
+                    if (SecurityToken != null && _tokenHandler != null && Issuer != null)
+                    {
+                        if (_tokenValidationParameters != null)
+                            _claimsIdentity = _tokenHandler.CreateClaimsIdentityInternal(SecurityToken, _tokenValidationParameters, Issuer);
+                    }
+
+                    _claimsIdentityInitialized = true;
+                }
+
+                return _claimsIdentity;
+            }
+            set
+            {
+                Debug.Assert(value is not null);
+                _claimsIdentity = value;
+                _claims = null;
+                _claimsIdentityInitialized = true;
+            }
         }
 
+#if NET9_0_OR_GREATER
+        /// <summary>Gets the object to use in <see cref="ClaimsIdentity"/> for double-checked locking.</summary>
+        private Lock ClaimsIdentitySyncObj
+        {
+            get
+            {
+                Lock syncObj = _claimsIdentitySyncObj;
+                if (syncObj is null)
+                {
+                    Interlocked.CompareExchange(ref _claimsIdentitySyncObj, new Lock(), null);
+                    syncObj = _claimsIdentitySyncObj;
+                }
+
+                return syncObj;
+            }
+        }
+#else
+        /// <summary>Gets the object to use in <see cref="ClaimsIdentity"/> for double-checked locking.</summary>
+        private object ClaimsIdentitySyncObj
+        {
+            get
+            {
+                object syncObj = _claimsIdentitySyncObj;
+                if (syncObj is null)
+                {
+                    Interlocked.CompareExchange(ref _claimsIdentitySyncObj, new object(), null);
+                    syncObj = _claimsIdentitySyncObj;
+                }
+
+                return syncObj;
+            }
+        }
+#endif
         /// <summary>
         /// Gets or sets the <see cref="Exception"/> that occurred during validation.
         /// </summary>
@@ -97,7 +187,7 @@ namespace Microsoft.IdentityModel.Tokens
         {
             get
             {
-                _hasIsValidOrExceptionBeenRead = true;
+                HasValidOrExceptionWasRead = true;
                 return _exception;
             }
             set
@@ -106,10 +196,7 @@ namespace Microsoft.IdentityModel.Tokens
             }
         }
 
-        private void Initialize()
-        {
-            _claims = new Lazy<IDictionary<string, object>>(() => TokenUtilities.CreateDictionaryFromClaims(ClaimsIdentity?.Claims));
-        }
+        internal bool HasValidOrExceptionWasRead { get; set; }
 
         /// <summary>
         /// Gets or sets the issuer that was found in the token.
@@ -123,7 +210,7 @@ namespace Microsoft.IdentityModel.Tokens
         {
             get
             {
-                _hasIsValidOrExceptionBeenRead = true;
+                HasValidOrExceptionWasRead = true;
                 return _isValid;
             }
             set
@@ -135,7 +222,15 @@ namespace Microsoft.IdentityModel.Tokens
         /// <summary>
         /// Gets or sets the <see cref="IDictionary{String, Object}"/> that contains a collection of custom key/value pairs. This allows addition of data that could be used in custom scenarios. This uses <see cref="StringComparer.Ordinal"/> for case-sensitive comparison of keys.
         /// </summary>
-        public IDictionary<string, object> PropertyBag { get; } = new Dictionary<string, object>(StringComparer.Ordinal);
+        public IDictionary<string, object> PropertyBag =>
+            // Lazily-initialize the property bag in a thread-safe manner. It's ok if a race condition results
+            // in multiple dictionaries being created, as long as only one is ever published and all consumers
+            // see the same instance. It's a bit strange to make this thread-safe, as the resulting Dictionary
+            // itself is not for writes, so multi-threaded consumption in which at least one consumer is mutating
+            // the dictionary need to provide their own synchronization.
+            _propertyBag ??
+            Interlocked.CompareExchange(ref _propertyBag, new Dictionary<string, object>(StringComparer.Ordinal), null) ??
+            _propertyBag;
 
         /// <summary>
         /// Gets or sets the <see cref="SecurityToken"/> that was validated.

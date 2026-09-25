@@ -2,13 +2,15 @@
 // Licensed under the MIT License.
 
 using System;
-using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Tracing;
 using System.Globalization;
 using System.Linq;
-using System.Text.RegularExpressions;
+using System.Text;
 using Microsoft.IdentityModel.Abstractions;
+#if NET8_0_OR_GREATER
+using System.Buffers;
+#endif
 
 namespace Microsoft.IdentityModel.Logging
 {
@@ -25,7 +27,23 @@ namespace Microsoft.IdentityModel.Logging
         /// <summary>
         /// Indicates whether the log message header (contains library version, date/time, and PII debugging information) has been written.
         /// </summary>
-        private static bool _isHeaderWritten = false;
+        private static bool _isHeaderWritten;
+
+#if NET8_0_OR_GREATER
+        /// <summary>
+        /// SearchValues containing all characters that need to be sanitized in log output.
+        /// This includes all control characters (Unicode category Cc) and format characters (Unicode category Cf).
+        /// </summary>
+        private static readonly SearchValues<char> s_charsToSanitize = SearchValues.Create(new char[] {
+            '\u0000', '\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u0008', '\u0009', '\u000A', '\u000B', '\u000C', '\u000D', '\u000E', '\u000F',
+            '\u0010', '\u0011', '\u0012', '\u0013', '\u0014', '\u0015', '\u0016', '\u0017', '\u0018', '\u0019', '\u001A', '\u001B', '\u001C', '\u001D', '\u001E', '\u001F',
+            '\u007F', '\u0080', '\u0081', '\u0082', '\u0083', '\u0084', '\u0085', '\u0086', '\u0087', '\u0088', '\u0089', '\u008A', '\u008B', '\u008C', '\u008D', '\u008E',
+            '\u008F', '\u0090', '\u0091', '\u0092', '\u0093', '\u0094', '\u0095', '\u0096', '\u0097', '\u0098', '\u0099', '\u009A', '\u009B', '\u009C', '\u009D', '\u009E',
+            '\u009F', '\u00AD', '\u0600', '\u0601', '\u0602', '\u0603', '\u0604', '\u0605', '\u061C', '\u06DD', '\u070F', '\u0890', '\u0891', '\u08E2', '\u180E', '\u200B',
+            '\u200C', '\u200D', '\u200E', '\u200F', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', '\u2060', '\u2061', '\u2062', '\u2063', '\u2064', '\u2066', '\u2067',
+            '\u2068', '\u2069', '\u206A', '\u206B', '\u206C', '\u206D', '\u206E', '\u206F', '\uFEFF', '\uFFF9', '\uFFFA', '\uFFFB'
+        });
+#endif
 
         /// <summary>
         /// The log message that is shown when PII is off.
@@ -43,6 +61,15 @@ namespace Microsoft.IdentityModel.Logging
             get { return _isHeaderWritten; }
             set { _isHeaderWritten = value; }
         }
+
+        /// <summary>
+        /// Gets whether logging is enabled at the specified <see cref="EventLogLevel"/>."/>
+        /// </summary>
+        /// <param name="level">The log level</param>
+        /// <returns><see langword="true"/> if logging is enabled at the specified level; otherwise, <see langword="false"/>.</returns>
+        public static bool IsEnabled(EventLogLevel level) =>
+            Logger.IsEnabled(level) ||
+            IdentityModelEventSource.Logger.IsEnabled(EventLogLevelToEventLevel(level), EventKeywords.All);
 
         /// <summary>
         /// Logs an exception using the event source logger and returns new <see cref="ArgumentNullException"/> exception.
@@ -257,12 +284,12 @@ namespace Microsoft.IdentityModel.Logging
             if (exception == null)
                 return null;
 
-            if (IdentityModelEventSource.Logger.IsEnabled() && IdentityModelEventSource.Logger.LogLevel >= eventLevel)
+            if (IdentityModelEventSource.Logger.IsEnabled(eventLevel, EventKeywords.All))
                 IdentityModelEventSource.Logger.Write(eventLevel, exception.InnerException, exception.Message);
 
-            EventLogLevel eventLogLevel = Enum.IsDefined(typeof(EventLogLevel), (int)eventLevel) ? (EventLogLevel)eventLevel : EventLogLevel.Error;
+            EventLogLevel eventLogLevel = EventLevelToEventLogLevel(eventLevel);
             if (Logger.IsEnabled(eventLogLevel))
-                Logger.Log(WriteEntry((EventLogLevel)eventLevel, exception.InnerException, exception.Message, null));
+                Logger.Log(WriteEntry(eventLogLevel, exception.InnerException, exception.Message, null));
 
             return exception;
         }
@@ -274,11 +301,11 @@ namespace Microsoft.IdentityModel.Logging
         /// <param name="args">An object array that contains zero or more objects to format.</param>
         public static void LogInformation(string message, params object[] args)
         {
-            if (IdentityModelEventSource.Logger.IsEnabled() && IdentityModelEventSource.Logger.LogLevel >= EventLevel.Informational)
+            if (IdentityModelEventSource.Logger.IsEnabled(EventLevel.Informational, EventKeywords.All))
                 IdentityModelEventSource.Logger.WriteInformation(message, args);
 
-            if (Enum.IsDefined(typeof(EventLogLevel), (int)EventLevel.Informational) && Logger.IsEnabled((EventLogLevel)EventLevel.Informational))
-                Logger.Log(WriteEntry((EventLogLevel)EventLevel.Informational, null, message, args));
+            if (Logger.IsEnabled(EventLogLevel.Informational))
+                Logger.Log(WriteEntry(EventLogLevel.Informational, null, message, args));
         }
 
         /// <summary>
@@ -288,11 +315,11 @@ namespace Microsoft.IdentityModel.Logging
         /// <param name="args">An object array that contains zero or more objects to format.</param>
         public static void LogVerbose(string message, params object[] args)
         {
-            if (IdentityModelEventSource.Logger.IsEnabled())
+            if (IdentityModelEventSource.Logger.IsEnabled(EventLevel.Verbose, EventKeywords.All))
                 IdentityModelEventSource.Logger.WriteVerbose(message, args);
 
-            if (Enum.IsDefined(typeof(EventLogLevel), (int)EventLevel.Verbose) && Logger.IsEnabled((EventLogLevel)EventLevel.Verbose))
-                Logger.Log(WriteEntry((EventLogLevel)EventLevel.Verbose, null, message, args));
+            if (Logger.IsEnabled(EventLogLevel.Verbose))
+                Logger.Log(WriteEntry(EventLogLevel.Verbose, null, message, args));
         }
 
         /// <summary>
@@ -302,11 +329,11 @@ namespace Microsoft.IdentityModel.Logging
         /// <param name="args">An object array that contains zero or more objects to format.</param>
         public static void LogWarning(string message, params object[] args)
         {
-            if (IdentityModelEventSource.Logger.IsEnabled())
+            if (IdentityModelEventSource.Logger.IsEnabled(EventLevel.Warning, EventKeywords.All))
                 IdentityModelEventSource.Logger.WriteWarning(message, args);
 
-            if (Enum.IsDefined(typeof(EventLogLevel), (int)EventLevel.Warning) && Logger.IsEnabled((EventLogLevel)EventLevel.Warning))
-                Logger.Log(WriteEntry((EventLogLevel)EventLevel.Warning, null, message, args));
+            if (Logger.IsEnabled(EventLogLevel.Warning))
+                Logger.Log(WriteEntry(EventLogLevel.Warning, null, message, args));
         }
 
         /// <summary>
@@ -317,33 +344,42 @@ namespace Microsoft.IdentityModel.Logging
         /// <param name="innerException">the inner <see cref="Exception"/> to be added to the outer exception.</param>
         /// <param name="format">Format string of the log message.</param>
         /// <param name="args">An object array that contains zero or more objects to format.</param>
-        private static T LogExceptionImpl<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>(EventLevel eventLevel, string argumentName, Exception innerException, string format, params object[] args) where T : Exception 
+        private static T LogExceptionImpl<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] T>(EventLevel eventLevel, string argumentName, Exception innerException, string format, params object[] args) where T : Exception
         {
-            string message = null;
-
+            string message;
             if (args != null)
                 message = string.Format(CultureInfo.InvariantCulture, format, args);
             else
                 message = format;
 
-            if (IdentityModelEventSource.Logger.IsEnabled() && IdentityModelEventSource.Logger.LogLevel >= eventLevel)
+            if (IdentityModelEventSource.Logger.IsEnabled(eventLevel, EventKeywords.All))
                 IdentityModelEventSource.Logger.Write(eventLevel, innerException, message);
 
-            EventLogLevel eventLogLevel = Enum.IsDefined(typeof(EventLogLevel), (int)eventLevel) ? (EventLogLevel)eventLevel : EventLogLevel.Error;
+            EventLogLevel eventLogLevel = EventLevelToEventLogLevel(eventLevel);
             if (Logger.IsEnabled(eventLogLevel))
-                Logger.Log(WriteEntry((EventLogLevel)eventLevel, innerException, message, null));
+                Logger.Log(WriteEntry(eventLogLevel, innerException, message, null));
 
-            if (innerException != null) 
+            if (innerException != null)
+            {
                 if (string.IsNullOrEmpty(argumentName))
                     return (T)Activator.CreateInstance(typeof(T), message, innerException);
                 else
                     return (T)Activator.CreateInstance(typeof(T), argumentName, message, innerException);
+            }
             else
+            {
                 if (string.IsNullOrEmpty(argumentName))
                     return (T)Activator.CreateInstance(typeof(T), message);
                 else
                     return (T)Activator.CreateInstance(typeof(T), argumentName, message);
+            }
         }
+
+        private static EventLogLevel EventLevelToEventLogLevel(EventLevel eventLevel) =>
+            (uint)(int)eventLevel <= 5 ? (EventLogLevel)eventLevel : EventLogLevel.Error;
+
+        private static EventLevel EventLogLevelToEventLevel(EventLogLevel eventLevel) =>
+            (uint)(int)eventLevel <= 5 ? (EventLevel)eventLevel : EventLevel.Error;
 
         /// <summary>
         /// Formats the string using InvariantCulture
@@ -372,8 +408,18 @@ namespace Microsoft.IdentityModel.Logging
 
             if (IdentityModelEventSource.LogCompleteSecurityArtifact && arg is ISafeLogSecurityArtifact)
                 return (arg as ISafeLogSecurityArtifact).UnsafeToString();
+            else if (arg is ISafeLogSecurityArtifact)
+            {
+                // We may later add a further flag which would log a best effort scrubbing of an artifact. E.g. JsonWebToken tries to remove the signature
+                // in the current implementation. Another flag may be added in the future to allow this middle path but for now, LogCompleteSecurityArtifact
+                // must be logged to emit any token part (other than specific claim values).
+                return string.Format(CultureInfo.InvariantCulture, IdentityModelEventSource.HiddenSecurityArtifactString, arg?.GetType().ToString() ?? "Null");
+            }
 
-            return arg;
+            // If it's not a ISafeLogSecurityArtifact then just return the object which will be converted to string.
+            // It's possible a raw string will contain a security artifact and be exposed here but the alternative is to scrub all objects
+            // which defeats the purpose of the ShowPII flag.
+            return Sanitize(arg.ToString()); //Sanitizes PII strings when ShowPII is true.
         }
 
         private static string RemovePII(object arg)
@@ -382,7 +428,7 @@ namespace Microsoft.IdentityModel.Logging
                 return ex.ToString();
 
             if (arg is NonPII)
-                return arg.ToString();
+                return Sanitize(arg.ToString()); // Sanitizes non-PII
 
             return string.Format(CultureInfo.InvariantCulture, IdentityModelEventSource.HiddenPIIString, arg?.GetType().ToString() ?? "Null");
         }
@@ -412,9 +458,46 @@ namespace Microsoft.IdentityModel.Logging
         /// <param name="arg">A log message argument to be marked as SecurityArtifact.</param>
         /// <param name="callback">A callback function to log the security artifact safely.</param>
         /// <returns>An argument marked as SecurityArtifact.</returns>
+        /// <remarks>
+        /// Since even the payload may sometimes contain security artifacts, naïve disarm algorithms such as removing signatures
+        /// will not work. For now the <paramref name="callback"/> will only be leveraged if
+        /// <see cref="IdentityModelEventSource.LogCompleteSecurityArtifact"/> is set and no unsafe callback is provided. Future changes
+        /// may introduce a support for best effort disarm logging.
+        /// </remarks>
         public static object MarkAsSecurityArtifact(object arg, Func<object, string> callback)
         {
             return new SecurityArtifact(arg, callback);
+        }
+
+        /// <summary>
+        /// Marks a log message argument (<paramref name="arg"/>) as SecurityArtifact.
+        /// </summary>
+        /// <param name="arg">A log message argument to be marked as SecurityArtifact.</param>
+        /// <param name="callback">A callback function to log the security artifact safely.</param>
+        /// <param name="callbackUnsafe">A callback function to log the security artifact without scrubbing.</param>
+        /// <returns>An argument marked as SecurityArtifact.</returns>
+        /// <exception cref="ArgumentNullException">if <paramref name="callback"/> is null.</exception>
+        /// <exception cref="ArgumentNullException">if <paramref name="callbackUnsafe"/> is null.</exception>
+        /// <remarks>
+        /// Since even the payload may sometimes contain security artifacts, naïve disarm algorithms such as removing signatures
+        /// will not work. For now the <paramref name="callback"/> is currently unused. Future changes
+        /// may introduce a support for best effort disarm logging which will leverage <paramref name="callback"/>.
+        /// </remarks>
+        public static object MarkAsSecurityArtifact(object arg, Func<object, string> callback, Func<object, string> callbackUnsafe)
+        {
+            return new SecurityArtifact(arg, callback, callbackUnsafe);
+        }
+
+        /// <summary>
+        /// Marks a log message argument (<paramref name="arg"/>) as SecurityArtifact.
+        /// </summary>
+        /// <param name="arg">A log message argument to be marked as SecurityArtifact.</param>
+        /// <param name="callbackUnsafe">A callback function to log the security artifact without scrubbing.</param>
+        /// <returns>An argument marked as SecurityArtifact.</returns>
+        /// <exception cref="ArgumentNullException">if <paramref name="callbackUnsafe"/> is null.</exception>
+        public static object MarkAsUnsafeSecurityArtifact(object arg, Func<object, string> callbackUnsafe)
+        {
+            return new SecurityArtifact(arg, SecurityArtifact.UnknownSafeTokenCallback, callbackUnsafe);
         }
 
         /// <summary>
@@ -459,6 +542,79 @@ namespace Microsoft.IdentityModel.Logging
                 entry.Message = message;
 
             return entry;
+        }
+
+        /// <summary>
+        /// Sanitizes a string by encoding potentially harmful characters.
+        /// </summary>
+        /// <param name="input">The input string to sanitize</param>
+        /// <returns>A sanitized string safe for logging</returns>
+        private static string Sanitize(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+                return input;
+
+#if NET8_0_OR_GREATER
+            // Use SearchValues for efficient character searching on .NET 8+
+            int index = input.AsSpan().IndexOfAny(s_charsToSanitize);
+            if (index < 0)
+                return input; // No characters to sanitize
+
+            var sanitized = new StringBuilder(input.Length);
+            int lastIndex = 0;
+
+            while (index >= 0)
+            {
+                // Append the part before the character to sanitize
+                sanitized.Append(input.AsSpan(lastIndex, index - lastIndex));
+
+                char c = input[index];
+                if (c == '\r')
+                    sanitized.Append("\\r");
+                else if (c == '\n')
+                    sanitized.Append("\\n");
+                else if (c == '\t')
+                    sanitized.Append("\\t");
+                else
+                    sanitized.Append($"\\u{(int)c:X4}");
+
+                lastIndex = index + 1;
+
+                // Find next character to sanitize
+                if (lastIndex < input.Length)
+                    index = input.AsSpan(lastIndex).IndexOfAny(s_charsToSanitize);
+                else
+                    index = -1;
+
+                if (index >= 0)
+                    index += lastIndex; // Adjust index to be relative to the original string
+            }
+
+            // Append any remaining characters
+            if (lastIndex < input.Length)
+                sanitized.Append(input.AsSpan(lastIndex));
+
+            return sanitized.ToString();
+#else
+            // Fallback for older .NET versions
+            var sanitized = new StringBuilder(input.Length);
+
+            foreach (char c in input)
+            {
+                if (c == '\r')
+                    sanitized.Append("\\r");
+                else if (c == '\n')
+                    sanitized.Append("\\n");
+                else if (c == '\t')
+                    sanitized.Append("\\t");
+                else if (char.IsControl(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format)
+                    sanitized.Append($"\\u{(int)c:X4}");
+                else
+                    sanitized.Append(c);
+            }
+
+            return sanitized.ToString();
+#endif
         }
     }
 }

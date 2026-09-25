@@ -2,10 +2,13 @@
 // Licensed under the MIT License.
 
 using System;
-using System.Security.Cryptography;
-using Microsoft.Azure.KeyVault.Cryptography.Algorithms;
 using Microsoft.IdentityModel.TestUtils;
 using Xunit;
+
+#if !NET10_0_OR_GREATER
+using System.Security.Cryptography;
+using Microsoft.Azure.KeyVault.Cryptography.Algorithms;
+#endif
 
 #pragma warning disable CS3016 // Arrays as attribute arguments is not CLS-compliant
 
@@ -13,12 +16,22 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 {
     public class KeyVaultVerify
     {
-        [Theory, MemberData(nameof(KeyWrapTheoryData))]
+        [Theory, MemberData(nameof(KeyWrapTheoryData), DisableDiscoveryEnumeration = true)]
         public void DecryptValidate(KeyWrapTestParams testParams)
         {
             if (testParams.Algorithm.Equals(SecurityAlgorithms.Aes128KW, StringComparison.OrdinalIgnoreCase)
                 || testParams.Algorithm.Equals(SecurityAlgorithms.Aes256KW, StringComparison.OrdinalIgnoreCase))
             {
+#if NET10_0_OR_GREATER
+                // For .NET 10, test round-trip using native implementation
+                var keyWrapProvider = CryptoProviderFactory.Default.CreateKeyWrapProvider(testParams.Key, testParams.Algorithm);
+                var wrappedKey = keyWrapProvider.WrapKey(testParams.KeyToWrap);
+                var unwrappedKey = keyWrapProvider.UnwrapKey(wrappedKey);
+
+                Assert.True(Utility.AreEqual(unwrappedKey, testParams.KeyToWrap), "Round-trip: Utility.AreEqual(unwrappedKey, testParams.KeyToWrap)");
+
+                CryptoProviderFactory.Default.ReleaseKeyWrapProvider(keyWrapProvider);
+#else
                 var wrappedKey = testParams.KeyVaultEncryptor.TransformFinalBlock(testParams.KeyToWrap, 0, testParams.KeyToWrap.Length);
                 var keyWrapProvider = CryptoProviderFactory.Default.CreateKeyWrapProvider(testParams.Key, testParams.Algorithm);
                 var unwrappedKey = keyWrapProvider.UnwrapKey(wrappedKey);
@@ -26,10 +39,12 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 Assert.True(Utility.AreEqual(unwrappedKey, testParams.KeyToWrap), "Utility.AreEqual(unwrappedKey, testParams.KeyToWrap)");
 
                 CryptoProviderFactory.Default.ReleaseKeyWrapProvider(keyWrapProvider);
+#endif
             }
             else if (testParams.Algorithm.Equals(SecurityAlgorithms.RsaOAEP, StringComparison.OrdinalIgnoreCase)
                     || testParams.Algorithm.Equals(SecurityAlgorithms.RsaPKCS1, StringComparison.OrdinalIgnoreCase))
             {
+#if !NET10_0_OR_GREATER
                 var keyWrapProvider = CryptoProviderFactory.Default.CreateKeyWrapProvider(testParams.Key, testParams.Algorithm);
                 var wrappedKey = testParams.KeyVaultEncryptor.TransformFinalBlock(testParams.KeyToWrap, 0, testParams.KeyToWrap.Length);
                 var unwrappedKey = keyWrapProvider.UnwrapKey(wrappedKey);
@@ -37,10 +52,11 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 Assert.True(Utility.AreEqual(unwrappedKey, testParams.KeyToWrap), "Utility.AreEqual(unwrappedKey, testParams.KeyToWrap)");
 
                 CryptoProviderFactory.Default.ReleaseKeyWrapProvider(keyWrapProvider);
+#endif
             }
         }
 
-        [Theory, MemberData(nameof(KeyWrapTheoryData))]
+        [Theory, MemberData(nameof(KeyWrapTheoryData), DisableDiscoveryEnumeration = true)]
         public void EncryptValidate(KeyWrapTestParams testParams)
         {
             if (testParams.Algorithm.Equals(SecurityAlgorithms.Aes128KW, StringComparison.OrdinalIgnoreCase)
@@ -48,7 +64,13 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             {
                 var keyWrapProvider = CryptoProviderFactory.Default.CreateKeyWrapProvider(testParams.Key, testParams.Algorithm);
                 var wrappedKey = keyWrapProvider.WrapKey(testParams.KeyToWrap);
+
+#if NET10_0_OR_GREATER
+                // For .NET 10, test round-trip using native implementation
+                var unwrappedKey = keyWrapProvider.UnwrapKey(wrappedKey);
+#else
                 byte[] unwrappedKey = testParams.KeyVaultDecryptor.TransformFinalBlock(wrappedKey, 0, wrappedKey.Length);
+#endif
 
                 Assert.True(Utility.AreEqual(unwrappedKey, testParams.KeyToWrap), "Utility.AreEqual(unwrappedKey, testParams.KeyToWrap)");
 
@@ -57,6 +79,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             else if (testParams.Algorithm.Equals(SecurityAlgorithms.RsaOAEP, StringComparison.OrdinalIgnoreCase)
                     || testParams.Algorithm.Equals(SecurityAlgorithms.RsaPKCS1, StringComparison.OrdinalIgnoreCase))
             {
+#if !NET10_0_OR_GREATER
                 var keyWrapProvider = CryptoProviderFactory.Default.CreateKeyWrapProvider(testParams.Key, testParams.Algorithm);
                 var wrappedKey = keyWrapProvider.WrapKey(testParams.KeyToWrap);
                 byte[] unwrappedKey = testParams.KeyVaultDecryptor.TransformFinalBlock(wrappedKey, 0, wrappedKey.Length);
@@ -64,6 +87,7 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                 Assert.True(Utility.AreEqual(unwrappedKey, testParams.KeyToWrap), "Utility.AreEqual(unwrappedKey, testParams.KeyToWrap)");
 
                 CryptoProviderFactory.Default.ReleaseKeyWrapProvider(keyWrapProvider);
+#endif
             }
         }
 
@@ -73,8 +97,26 @@ namespace Microsoft.IdentityModel.Tokens.Tests
             {
                 var theoryData = new TheoryData<KeyWrapTestParams>();
 
-                AesKw128 aesKw128 = new AesKw128();
+#if NET10_0_OR_GREATER
+                theoryData.Add(new KeyWrapTestParams
+                {
+                    Algorithm = SecurityAlgorithms.Aes128KW,
+                    Key = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_128),
+                    KeyToWrap = AES128_KeyWrap.CEK,
+                    TestId = "AES128_KeyWrap"
+                });
+
+                theoryData.Add(new KeyWrapTestParams
+                {
+                    Algorithm = SecurityAlgorithms.Aes256KW,
+                    Key = new SymmetricSecurityKey(KeyingMaterial.DefaultSymmetricKeyBytes_256),
+                    KeyToWrap = AES128_KeyWrap.CEK,
+                    TestId = "AES256_KeyWrap"
+                });
+#else
                 byte[] defaultIV = new byte[] { 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6 };
+
+                AesKw128 aesKw128 = new AesKw128();
                 theoryData.Add(new KeyWrapTestParams
                 {
                     Algorithm = SecurityAlgorithms.Aes128KW,
@@ -95,42 +137,8 @@ namespace Microsoft.IdentityModel.Tokens.Tests
                     KeyToWrap = AES128_KeyWrap.CEK,
                     TestId = "AES256_KeyWrap"
                 });
-
-#if NET452
-                Rsa15 rsa15 = new Rsa15();
-                theoryData.Add(new KeyWrapTestParams
-                {
-                    Algorithm = SecurityAlgorithms.RsaPKCS1,
-                    KeyVaultEncryptor = rsa15.CreateEncryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048_Public.Rsa),
-                    KeyVaultDecryptor = rsa15.CreateDecryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048.Rsa),
-                    Key = KeyingMaterial.RsaSecurityKeyWithCspProvider_2048,
-                    KeyToWrap = RSAES_PKCS1_KeyWrap.CEK,
-                    TestId = "RSAES-PKCS1-v1_5"
-                });
-
-                RsaOaep rsaOaep = new RsaOaep();
-                theoryData.Add(new KeyWrapTestParams
-                {
-                    Algorithm = SecurityAlgorithms.RsaOAEP,
-                    KeyVaultEncryptor = rsaOaep.CreateEncryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048_Public.Rsa),
-                    KeyVaultDecryptor = rsaOaep.CreateDecryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048.Rsa),
-                    Key = KeyingMaterial.RsaSecurityKeyWithCspProvider_2048,
-                    KeyToWrap = RSAES_OAEP_KeyWrap.CEK,
-                    TestId = "RSA_OAEP_KeyWrap"
-                });
-
-                rsaOaep = new RsaOaep();
-                theoryData.Add(new KeyWrapTestParams
-                {
-                    Algorithm = SecurityAlgorithms.RsaOaepKeyWrap,
-                    KeyVaultEncryptor = rsaOaep.CreateEncryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048_Public.Rsa),
-                    KeyVaultDecryptor = rsaOaep.CreateDecryptor(KeyingMaterial.RsaSecurityKeyWithCspProvider_2048.Rsa),
-                    Key = KeyingMaterial.RsaSecurityKeyWithCspProvider_2048,
-                    KeyToWrap = RSAES_OAEP_KeyWrap.CEK,
-                    TestId = "RsaOaepKeyWrap"
-                });
-
 #endif
+
                 return theoryData;
             }
         }
@@ -138,15 +146,17 @@ namespace Microsoft.IdentityModel.Tokens.Tests
         public class KeyWrapTestParams
         {
             public string Algorithm { get; set; }
+#if !NET10_0_OR_GREATER
             public ICryptoTransform KeyVaultEncryptor { get; set; }
             public ICryptoTransform KeyVaultDecryptor { get; set; }
+#endif
             public SecurityKey Key { get; set; }
             public byte[] KeyToWrap { get; set; }
             public string TestId { get; set; }
 
             public override string ToString()
             {
-                    return TestId + ", " + Algorithm + ", " + Key.KeyId;
+                return TestId + ", " + Algorithm + ", " + Key.KeyId;
             }
         }
     }

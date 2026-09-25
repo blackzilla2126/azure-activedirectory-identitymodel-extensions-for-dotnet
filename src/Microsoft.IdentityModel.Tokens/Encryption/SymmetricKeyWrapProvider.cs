@@ -5,35 +5,43 @@ using System;
 using System.Security.Cryptography;
 using Microsoft.IdentityModel.Logging;
 
+#if NET9_0_OR_GREATER
+using System.Threading;
+#endif
+
 namespace Microsoft.IdentityModel.Tokens
 {
     /// <summary>
-    /// Provides Wrap key and Unwrap key services.
+    /// Provides Wrap and Unwrap key services.
     /// </summary>
     public class SymmetricKeyWrapProvider : KeyWrapProvider
     {
         private static readonly byte[] _defaultIV = new byte[] { 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6 };
         private const int _blockSizeInBits = 64;
         private const int _blockSizeInBytes = _blockSizeInBits >> 3;
-        private static object _encryptorLock = new object();
-        private static object _decryptorLock = new object();
-
+#if NET9_0_OR_GREATER
+        private static readonly Lock s_encryptorLock = new();
+        private static readonly Lock s_decryptorLock = new();
+#else
+        private static readonly object s_encryptorLock = new();
+        private static readonly object s_decryptorLock = new();
+#endif
         private Lazy<SymmetricAlgorithm> _symmetricAlgorithm;
         private ICryptoTransform _symmetricAlgorithmEncryptor;
         private ICryptoTransform _symmetricAlgorithmDecryptor;
         private bool _disposed;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="KeyWrapProvider"/> class used for wrap key and unwrap key.
-        /// <param name="key">The <see cref="SecurityKey"/> that will be used for crypto operations.</param>
-        /// <param name="algorithm">The KeyWrap algorithm to apply.</param>
-        /// <exception cref="ArgumentNullException">'key' is null.</exception>
-        /// <exception cref="ArgumentNullException">'algorithm' is null.</exception>
-        /// <exception cref="ArgumentException">If <see cref="SecurityKey"/> and algorithm pair are not supported.</exception>
-        /// <exception cref="ArgumentException">The <see cref="SecurityKey"/> cannot be converted to byte array</exception>
-        /// <exception cref="ArgumentOutOfRangeException">The keysize doesn't match the algorithm.</exception>
-        /// <exception cref="InvalidOperationException">Failed to create symmetric algorithm with provided key and algorithm.</exception>
+        /// Initializes a new instance of the <see cref="KeyWrapProvider"/> class used for wrapping and unwrapping keys.
         /// </summary>
+        /// <param name="key">The <see cref="SecurityKey"/> that will be used for cryptographic operations.</param>
+        /// <param name="algorithm">The KeyWrap algorithm to be used.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="key"/> is null.</exception>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="algorithm"/> is null.</exception>
+        /// <exception cref="ArgumentException">Thrown if the <see cref="SecurityKey"/> and algorithm pair are not supported.</exception>
+        /// <exception cref="ArgumentException">Thrown if the <see cref="SecurityKey"/> cannot be converted to a byte array.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown if the key size doesn't match the algorithm.</exception>
+        /// <exception cref="InvalidOperationException">Thrown if failed to create a symmetric algorithm with the provided key and algorithm.</exception>
         public SymmetricKeyWrapProvider(SecurityKey key, string algorithm)
         {
             if (key == null)
@@ -67,7 +75,7 @@ namespace Microsoft.IdentityModel.Tokens
         private SymmetricAlgorithm CreateSymmetricAlgorithm()
         {
             if (!IsSupportedAlgorithm(Key, Algorithm))
-                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10661, LogHelper.MarkAsNonPII(Algorithm), Key)));
+                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10661, LogHelper.MarkAsNonPII(Algorithm), LogHelper.MarkAsNonPII(Key.KeyId))));
 
             SymmetricAlgorithm symmetricAlgorithm = GetSymmetricAlgorithm(Key, Algorithm);
 
@@ -78,9 +86,9 @@ namespace Microsoft.IdentityModel.Tokens
         }
 
         /// <summary>
-        /// Disposes of internal components.
+        /// Releases the resources used by the current instance.
         /// </summary>
-        /// <param name="disposing">true, if called from Dispose(), false, if invoked inside a finalizer.</param>
+        /// <param name="disposing">If true, release both managed and unmanaged resources; otherwise, release only unmanaged resources.</param>
         protected override void Dispose(bool disposing)
         {
             if (!_disposed)
@@ -125,17 +133,19 @@ namespace Microsoft.IdentityModel.Tokens
         /// <summary>
         /// Returns the <see cref="SymmetricAlgorithm"/>.
         /// </summary>
-        /// <returns></returns>
-        /// <exception cref="ArgumentException">The <see cref="SecurityKey"/> cannot be converted to byte array</exception>
-        /// <exception cref="ArgumentOutOfRangeException">The keysize doesn't match the algorithm.</exception>
-        /// <exception cref="InvalidOperationException">Failed to create symmetric algorithm with provided key and algorithm.</exception>
+        /// <param name="key">The <see cref="SecurityKey"/> that will be used for cryptographic operations.</param>
+        /// <param name="algorithm">The encryption algorithm to be used.</param>
+        /// <returns>The initialized <see cref="SymmetricAlgorithm"/>.</returns>
+        /// <exception cref="ArgumentException">Thrown if the <see cref="SecurityKey"/> cannot be converted to a byte array.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown if the key size doesn't match the algorithm.</exception>
+        /// <exception cref="InvalidOperationException">Thrown if failed to create a symmetric algorithm with the provided key and algorithm.</exception>
         protected virtual SymmetricAlgorithm GetSymmetricAlgorithm(SecurityKey key, string algorithm)
         {
             if (key == null)
                 throw LogHelper.LogArgumentNullException(nameof(key));
 
             if (!IsSupportedAlgorithm(key, algorithm))
-                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10661, LogHelper.MarkAsNonPII(algorithm), key)));
+                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10661, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(key.KeyId))));
 
             byte[] keyBytes = null;
 
@@ -156,44 +166,47 @@ namespace Microsoft.IdentityModel.Tokens
             {
                 // Create the AES provider
                 SymmetricAlgorithm symmetricAlgorithm = Aes.Create();
-                symmetricAlgorithm.Mode = CipherMode.ECB;
+#if !NET10_0_OR_GREATER
+                symmetricAlgorithm.Mode = CipherMode.ECB; // CodeQL [SM02199] Approved necessary usage of AES-ECB for implementing AES-KW
                 symmetricAlgorithm.Padding = PaddingMode.None;
+#endif
                 symmetricAlgorithm.KeySize = keyBytes.Length * 8;
                 symmetricAlgorithm.Key = keyBytes;
 
+#if !NET10_0_OR_GREATER
                 // Set the AES IV to Zeroes
                 var aesIv = new byte[symmetricAlgorithm.BlockSize >> 3];
                 Utility.Zero(aesIv);
                 symmetricAlgorithm.IV = aesIv;
-
+#endif
                 return symmetricAlgorithm;
             }
             catch (Exception ex)
             {
-                throw LogHelper.LogExceptionMessage(new InvalidOperationException(LogHelper.FormatInvariant(LogMessages.IDX10663, key, LogHelper.MarkAsNonPII(algorithm)), ex));
+                throw LogHelper.LogExceptionMessage(new InvalidOperationException(LogHelper.FormatInvariant(LogMessages.IDX10663, LogHelper.MarkAsNonPII(key.KeyId), LogHelper.MarkAsNonPII(algorithm)), ex));
             }
         }
 
         /// <summary>
-        /// Answers if an algorithm is supported
+        /// Determines whether the specified algorithm is supported.
         /// </summary>
-        /// <param name="key">the <see cref="SecurityKey"/></param>
-        /// <param name="algorithm">the algorithm to use</param>
-        /// <returns>true if the algorithm is supported; otherwise, false.</returns>
+        /// <param name="key">The <see cref="SecurityKey"/> to use for cryptographic operations.</param>
+        /// <param name="algorithm">The algorithm to check for support.</param>
+        /// <returns><see langword="true"/> if the algorithm is supported; otherwise, <see langword="false"/>.</returns>
         protected virtual bool IsSupportedAlgorithm(SecurityKey key, string algorithm)
         {
             return SupportedAlgorithms.IsSupportedSymmetricKeyWrap(algorithm, key);
         }
 
         /// <summary>
-        /// Unwrap a key using Symmetric decryption.
+        /// Unwraps a key using symmetric decryption.
         /// </summary>
-        /// <param name="keyBytes">bytes to unwrap</param>
-        /// <returns>Unwraped key</returns>
-        /// <exception cref="ArgumentNullException">'keyBytes' is null or length == 0.</exception>
-        /// <exception cref="ArgumentException">'keyBytes' is not a multiple of 8.</exception>
-        /// <exception cref="ObjectDisposedException">If <see cref="KeyWrapProvider.Dispose(bool)"/> has been called.</exception>
-        /// <exception cref="SecurityTokenKeyWrapException">Failed to unwrap the wrappedKey.</exception>
+        /// <param name="keyBytes">The bytes to unwrap.</param>
+        /// <returns>The unwrapped key.</returns>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="keyBytes"/> is null or has a length of 0.</exception>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="keyBytes"/> is not a multiple of 8.</exception>
+        /// <exception cref="ObjectDisposedException">Thrown if <see cref="KeyWrapProvider.Dispose(bool)"/> has been called.</exception>
+        /// <exception cref="SecurityTokenKeyWrapException">Thrown if the key unwrapping operation fails.</exception>
         public override byte[] UnwrapKey(byte[] keyBytes)
         {
             if (keyBytes == null || keyBytes.Length == 0)
@@ -207,7 +220,11 @@ namespace Microsoft.IdentityModel.Tokens
 
             try
             {
+#if NET10_0_OR_GREATER
+                return ((Aes)_symmetricAlgorithm.Value).DecryptEcb(keyBytes, PaddingMode.None);
+#else
                 return UnwrapKeyPrivate(keyBytes, 0, keyBytes.Length);
+#endif
             }
             catch (Exception ex)
             {
@@ -257,7 +274,7 @@ namespace Microsoft.IdentityModel.Tokens
 
             if (_symmetricAlgorithmDecryptor == null)
             {
-                lock (_decryptorLock)
+                lock (s_decryptorLock)
                 {
                     if (_symmetricAlgorithmDecryptor == null)
                         _symmetricAlgorithmDecryptor = _symmetricAlgorithm.Value.CreateDecryptor();
@@ -294,7 +311,7 @@ namespace Microsoft.IdentityModel.Tokens
                 }
             }
 
-           if (Utility.AreEqual(a, _defaultIV))
+            if (Utility.AreEqual(a, _defaultIV))
             {
                 var keyBytes = new byte[n << 3];
 
@@ -316,7 +333,7 @@ namespace Microsoft.IdentityModel.Tokens
             if (SecurityAlgorithms.Aes128KW.Equals(algorithm) || SecurityAlgorithms.Aes128KeyWrap.Equals(algorithm))
             {
                 if (key.Length != 16)
-                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(128), Key.KeyId, LogHelper.MarkAsNonPII(key.Length << 3))));
+                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(128), LogHelper.MarkAsNonPII(Key.KeyId), LogHelper.MarkAsNonPII(key.Length << 3))));
 
                 return;
             }
@@ -324,7 +341,7 @@ namespace Microsoft.IdentityModel.Tokens
             if (SecurityAlgorithms.Aes192KW.Equals(algorithm) || SecurityAlgorithms.Aes192KeyWrap.Equals(algorithm))
             {
                 if (key.Length != 24)
-                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(128), Key.KeyId, LogHelper.MarkAsNonPII(key.Length << 3))));
+                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(128), LogHelper.MarkAsNonPII(Key.KeyId), LogHelper.MarkAsNonPII(key.Length << 3))));
 
                 return;
             }
@@ -332,7 +349,7 @@ namespace Microsoft.IdentityModel.Tokens
             if (SecurityAlgorithms.Aes256KW.Equals(algorithm) || (SecurityAlgorithms.Aes256KeyWrap.Equals(algorithm)))
             {
                 if (key.Length != 32)
-                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(256), Key.KeyId, LogHelper.MarkAsNonPII(key.Length << 3))));
+                    throw LogHelper.LogExceptionMessage(new ArgumentOutOfRangeException(nameof(key), LogHelper.FormatInvariant(LogMessages.IDX10662, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(256), LogHelper.MarkAsNonPII(Key.KeyId), LogHelper.MarkAsNonPII(key.Length << 3))));
 
                 return;
             }
@@ -341,14 +358,14 @@ namespace Microsoft.IdentityModel.Tokens
         }
 
         /// <summary>
-        /// Wrap a key using Symmetric encryption.
+        /// Wraps a key using symmetric encryption.
         /// </summary>
-        /// <param name="keyBytes">the key to be wrapped</param>
-        /// <returns>The wrapped key result</returns>
-        /// <exception cref="ArgumentNullException">'keyBytes' is null or has length 0.</exception>
-        /// <exception cref="ArgumentException">'keyBytes' is not a multiple of 8.</exception>
-        /// <exception cref="ObjectDisposedException">If <see cref="KeyWrapProvider.Dispose(bool)"/> has been called.</exception>
-        /// <exception cref="SecurityTokenKeyWrapException">Failed to wrap 'keyBytes'.</exception>
+        /// <param name="keyBytes">The key to be wrapped.</param>
+        /// <returns>The wrapped key.</returns>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="keyBytes"/> is null or has a length of 0.</exception>
+        /// <exception cref="ArgumentException">Thrown if <paramref name="keyBytes"/> is not a multiple of 8.</exception>
+        /// <exception cref="ObjectDisposedException">Thrown if <see cref="KeyWrapProvider.Dispose(bool)"/> has been called.</exception>
+        /// <exception cref="SecurityTokenKeyWrapException">Thrown if the key wrapping operation fails.</exception>
         public override byte[] WrapKey(byte[] keyBytes)
         {
             if (keyBytes == null || keyBytes.Length == 0)
@@ -362,7 +379,11 @@ namespace Microsoft.IdentityModel.Tokens
 
             try
             {
+#if NET10_0_OR_GREATER
+                return ((Aes)_symmetricAlgorithm.Value).EncryptEcb(keyBytes, PaddingMode.None);
+#else
                 return WrapKeyPrivate(keyBytes, 0, keyBytes.Length);
+#endif
             }
             catch (Exception ex)
             {
@@ -407,7 +428,7 @@ namespace Microsoft.IdentityModel.Tokens
 
             if (_symmetricAlgorithmEncryptor == null)
             {
-                lock (_encryptorLock)
+                lock (s_encryptorLock)
                 {
                     if (_symmetricAlgorithmEncryptor == null)
                         _symmetricAlgorithmEncryptor = _symmetricAlgorithm.Value.CreateEncryptor();

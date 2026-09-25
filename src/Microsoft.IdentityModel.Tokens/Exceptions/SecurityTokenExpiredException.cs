@@ -19,11 +19,6 @@ namespace Microsoft.IdentityModel.Tokens
         const string _ExpiresKey = _Prefix + nameof(Expires);
 
         /// <summary>
-        /// Gets or sets the Expires value that created the validation exception. This value is always in UTC.
-        /// </summary>
-        public DateTime Expires { get; set; }
-
-        /// <summary>
         /// Initializes a new instance of  <see cref="SecurityTokenExpiredException"/>
         /// </summary>
         public SecurityTokenExpiredException()
@@ -52,6 +47,9 @@ namespace Microsoft.IdentityModel.Tokens
         /// </summary>
         /// <param name="info">the <see cref="SerializationInfo"/> that holds the serialized object data.</param>
         /// <param name="context">The contextual information about the source or destination.</param>
+#if NET8_0_OR_GREATER
+        [Obsolete("Formatter-based serialization is obsolete", DiagnosticId = "SYSLIB0051")]
+#endif
         protected SecurityTokenExpiredException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
@@ -71,7 +69,15 @@ namespace Microsoft.IdentityModel.Tokens
             }
         }
 
+        /// <summary>
+        /// Gets or sets the Expires value that created the validation exception. This value is always in UTC.
+        /// </summary>
+        public DateTime Expires { get; set; }
+
         /// <inheritdoc/>
+#if NET8_0_OR_GREATER
+        [Obsolete("Formatter-based serialization is obsolete", DiagnosticId = "SYSLIB0051")]
+#endif
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);

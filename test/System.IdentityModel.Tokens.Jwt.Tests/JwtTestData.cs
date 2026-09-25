@@ -2,8 +2,9 @@
 // Licensed under the MIT License.
 
 using System.Collections.Generic;
-using Microsoft.IdentityModel.Json;
 using Microsoft.IdentityModel.TestUtils;
+using Newtonsoft.Json;
+using System.Text.Json;
 using Xunit;
 
 namespace System.IdentityModel.Tokens.Jwt.Tests
@@ -57,6 +58,13 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                 ExpectedException = ExpectedException.SecurityTokenMalformedTokenException(errorStrings[0]),
                 TestId = "a",
                 Token = "a"
+            });
+            theoryData.Add(new JwtTheoryData
+            {
+                CanRead = false,
+                ExpectedException = ExpectedException.SecurityTokenMalformedTokenException(errorStrings[0]),
+                TestId = "a.",
+                Token = "a."
             });
             theoryData.Add(new JwtTheoryData
             {
@@ -210,7 +218,7 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
             theoryData.Add(new JwtTheoryData
             {
                 CanRead = false,
-                TestId =  "'invalidRegEx: first position'",
+                TestId = "'invalidRegEx: first position'",
                 Token = invalidRegEx + "." + validRegEx + "." + validRegEx + "." + validRegEx + "." + validRegEx,
                 ExpectedException = ExpectedException.SecurityTokenMalformedTokenException(errorString)
             });
@@ -316,7 +324,7 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                 CanRead = true,
                 TestId = nameof(EncodedJwts.InvalidPayload),
                 Token = EncodedJwts.InvalidPayload,
-                ExpectedException = ExpectedException.ArgumentException(substringExpected: "IDX12723:", inner: typeof(JsonReaderException))
+                ExpectedException = new ExpectedException(typeof(ArgumentException), "IDX12723:", null, true)
             });
 
             return theoryData;

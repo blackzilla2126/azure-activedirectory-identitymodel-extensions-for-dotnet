@@ -3,11 +3,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.IdentityModel.Abstractions;
 using Microsoft.IdentityModel.Logging;
 using Microsoft.IdentityModel.Tokens;
 
@@ -75,6 +77,28 @@ namespace Microsoft.IdentityModel.Protocols
         public bool RequireHttps { get; set; } = true;
 
         /// <summary>
+        /// If set, specifies the desired HTTP version to use for the requests.
+        /// Otherwise, HttpClient.DefaultRequestVersion is used.
+        /// </summary>
+        /// <remarks>
+        /// HttpRequestMessage.Version specifies the desired request version.
+        /// HttpRequestMessage.VersionPolicy defines how strictly the HTTP version should be adhered to, allowing for fallback to other versions if necessary.
+        /// </remarks>
+        public Version HttpVersion { get; set; }
+
+#if NET6_0_OR_GREATER
+        /// <summary>
+        /// If set, specifies the protocol version policy to use when sending HTTP requests.
+        /// Otherwise, HttpClient.DefaultVersionPolicy is used.
+        /// </summary>
+        /// <remarks>
+        /// HttpRequestMessage.Version specifies the desired request version.
+        /// HttpRequestMessage.VersionPolicy defines how strictly the HTTP version should be adhered to, allowing for fallback to other versions if necessary.
+        /// </remarks>
+        public HttpVersionPolicy? HttpVersionPolicy { get; set; }
+#endif
+
+        /// <summary>
         /// Returns a task which contains a string converted from remote document when completed, by using the provided address.
         /// </summary>
         /// <param name="address">Location of document</param>
@@ -83,37 +107,79 @@ namespace Microsoft.IdentityModel.Protocols
         public async Task<string> GetDocumentAsync(string address, CancellationToken cancel)
         {
             if (string.IsNullOrWhiteSpace(address))
-                throw LogHelper.LogArgumentNullException("address");
+                throw LogHelper.LogArgumentNullException(nameof(address));
 
             if (!Utility.IsHttps(address) && RequireHttps)
-                throw LogHelper.LogExceptionMessage(new ArgumentException(LogHelper.FormatInvariant(LogMessages.IDX20108, address), nameof(address)));
+                throw LogHelper.LogExceptionMessage(
+                    new ArgumentException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX20108,
+                            LogHelper.MarkAsNonPII(address)),
+                        nameof(address)));
 
             Exception unsuccessfulHttpResponseException;
             HttpResponseMessage response;
             try
             {
-                LogHelper.LogVerbose(LogMessages.IDX20805, address);
+                if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+                    LogHelper.LogVerbose(LogMessages.IDX20805, LogHelper.MarkAsNonPII(address));
+
                 var httpClient = _httpClient ?? _defaultHttpClient;
                 var uri = new Uri(address, UriKind.RelativeOrAbsolute);
-                response = await SendAsyncAndRetryOnNetworkError(httpClient, uri).ConfigureAwait(false);
+                response = await SendAndRetryOnNetworkErrorAsync(httpClient, uri).ConfigureAwait(false);
 
                 var responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                     return responseContent;
 
-                unsuccessfulHttpResponseException = new IOException(LogHelper.FormatInvariant(LogMessages.IDX20807, address, response, responseContent));
+                unsuccessfulHttpResponseException = new IOException(
+                    LogHelper.FormatInvariant(
+                        LogMessages.IDX20807,
+                        LogHelper.MarkAsNonPII(address),
+                        response,
+                        responseContent));
+
                 unsuccessfulHttpResponseException.Data.Add(StatusCode, response.StatusCode);
                 unsuccessfulHttpResponseException.Data.Add(ResponseContent, responseContent);
             }
             catch (Exception ex)
             {
-                throw LogHelper.LogExceptionMessage(new IOException(LogHelper.FormatInvariant(LogMessages.IDX20804, address), ex));
+                throw LogHelper.LogExceptionMessage(
+                    new IOException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX20804,
+                            LogHelper.MarkAsNonPII(address)),
+                        ex));
             }
 
             throw LogHelper.LogExceptionMessage(unsuccessfulHttpResponseException);
         }
 
-        private async Task<HttpResponseMessage> SendAsyncAndRetryOnNetworkError(HttpClient httpClient, Uri uri)
+        /// <summary>
+        /// Applies the HTTP version and version policy to the <see cref="HttpRequestMessage"/>.
+        /// </summary>
+        /// <param name="httpClient">The <see cref="HttpClient"/> used to obtain the default values.</param>
+        /// <param name="message">The <see cref="HttpRequestMessage"/> where to apply the version and policy.</param>
+        [SuppressMessage("Usage", "CA1801:Review unused parameters", Justification = "Parameter is only used for .NET 6")]
+        private void ApplyHttpVersionAndPolicy(HttpClient httpClient, HttpRequestMessage message)
+        {
+            // either use explicit or default version from HttpClient
+            if (HttpVersion != null)
+            {
+                message.Version = HttpVersion;
+            }
+#if NET6_0_OR_GREATER
+            else
+            {
+                message.Version = httpClient.DefaultRequestVersion;
+            }
+
+            // either use explicit or default version policy from HttpClient
+            message.VersionPolicy = HttpVersionPolicy.GetValueOrDefault(httpClient.DefaultVersionPolicy);
+#endif
+        }
+
+        private async Task<HttpResponseMessage> SendAndRetryOnNetworkErrorAsync(HttpClient httpClient, Uri uri)
         {
             int maxAttempt = 2;
             HttpResponseMessage response = null;
@@ -122,6 +188,8 @@ namespace Microsoft.IdentityModel.Protocols
                 // need to create a new message each time since you cannot send the same message twice
                 using (var message = new HttpRequestMessage(HttpMethod.Get, uri))
                 {
+                    ApplyHttpVersionAndPolicy(httpClient, message);
+
                     if (SendAdditionalHeaderData)
                         IdentityModelTelemetryUtil.SetTelemetryData(message, AdditionalHeaderData);
 
@@ -131,12 +199,14 @@ namespace Microsoft.IdentityModel.Protocols
 
                     if (response.StatusCode.Equals(HttpStatusCode.RequestTimeout) || response.StatusCode.Equals(HttpStatusCode.ServiceUnavailable))
                     {
-                        if (i < maxAttempt) // logging exception details and that we will attempt to retry document retrieval
+                        if (i < maxAttempt && LogHelper.IsEnabled(EventLogLevel.Informational)) // logging exception details and that we will attempt to retry document retrieval
                             LogHelper.LogInformation(LogHelper.FormatInvariant(LogMessages.IDX20808, response.StatusCode, await response.Content.ReadAsStringAsync().ConfigureAwait(false), message.RequestUri));
                     }
                     else // if the exception type does not indicate the need to retry we should break
                     {
-                        LogHelper.LogWarning(LogHelper.FormatInvariant(LogMessages.IDX20809, message.RequestUri, response.StatusCode, await response.Content.ReadAsStringAsync().ConfigureAwait(false)));
+                        if (LogHelper.IsEnabled(EventLogLevel.Warning))
+                            LogHelper.LogWarning(LogHelper.FormatInvariant(LogMessages.IDX20809, message.RequestUri, response.StatusCode, await response.Content.ReadAsStringAsync().ConfigureAwait(false)));
+
                         break;
                     }
                 }

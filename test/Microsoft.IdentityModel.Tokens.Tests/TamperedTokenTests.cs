@@ -15,13 +15,15 @@ namespace Microsoft.IdentityModel.Tokens.Tests
 {
     public class TamperedTokenTests
     {
-        [Theory, MemberData(nameof(JwtSignatureTruncationTheoryData))]
+        [Theory, MemberData(nameof(JwtSignatureTruncationTheoryData), DisableDiscoveryEnumeration = true)]
         public async Task JwtSignatureTruncation(ValidateTokenTheoryData theoryData)
         {
             CompareContext compareContext = TestUtilities.WriteHeader($"{this}.JwtSignatureTruncation", theoryData);
             JsonWebToken jsonWebToken = new JsonWebToken(theoryData.JsonWebToken);
             JsonWebTokenHandler jsonWebTokenHandler = new JsonWebTokenHandler();
+#pragma warning disable CS0618 // Type or member is obsolete
             JwtSecurityTokenHandler jwtSecurityTokenHandler = new JwtSecurityTokenHandler();
+#pragma warning restore CS0618 // Type or member is obsolete
             TokenValidationResult tokenValidationResult;
 
             try

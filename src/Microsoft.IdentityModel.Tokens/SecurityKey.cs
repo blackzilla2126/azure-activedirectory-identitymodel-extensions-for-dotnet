@@ -2,8 +2,12 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Text.Json.Serialization;
 using Microsoft.IdentityModel.Logging;
-using Microsoft.IdentityModel.Json;
+
+#if NET9_0_OR_GREATER
+using System.Threading;
+#endif
 
 namespace Microsoft.IdentityModel.Tokens
 {
@@ -13,13 +17,17 @@ namespace Microsoft.IdentityModel.Tokens
     public abstract class SecurityKey
     {
         private CryptoProviderFactory _cryptoProviderFactory;
-        private Lazy<string> _internalId;
 
+#if NET9_0_OR_GREATER
+        private readonly Lock _internalIdLock = new();
+#else
+        private readonly object _internalIdLock = new();
+#endif
+        private string _internalId;
         internal SecurityKey(SecurityKey key)
         {
             _cryptoProviderFactory = key._cryptoProviderFactory;
             KeyId = key.KeyId;
-            SetInternalId();
         }
 
         /// <summary>
@@ -28,11 +36,30 @@ namespace Microsoft.IdentityModel.Tokens
         public SecurityKey()
         {
             _cryptoProviderFactory = CryptoProviderFactory.Default;
-            SetInternalId();
         }
 
         [JsonIgnore]
-        internal virtual string InternalId { get => _internalId.Value; }
+        internal virtual string InternalId
+        {
+            get
+            {
+                if (_internalId == null)
+                {
+                    lock (_internalIdLock)
+                    {
+                        if (_internalId == null)
+                        {
+                            if (CanComputeJwkThumbprint())
+                                _internalId = Base64UrlEncoder.Encode(ComputeJwkThumbprint());
+                            else
+                                _internalId = string.Empty;
+                        }
+                    }
+                }
+
+                return _internalId;
+            }
+        }
 
         /// <summary>
         /// This must be overridden to get the size of this <see cref="SecurityKey"/>.
@@ -93,26 +120,12 @@ namespace Microsoft.IdentityModel.Tokens
         /// <summary>
         /// Checks if <see cref="SecurityKey.CryptoProviderFactory"/> can perform the cryptographic operation specified by the <paramref name="algorithm"/> with this <see cref="SecurityKey"/>.
         /// </summary>
-        /// <param name="algorithm">the algorithm to apply.</param>
+        /// <param name="algorithm">the algorithm to be used.</param>
         /// <returns>true if <see cref="SecurityKey.CryptoProviderFactory"/> can perform the cryptographic operation sepecified by the <paramref name="algorithm"/> with this <see cref="SecurityKey"/>.</returns>
         public virtual bool IsSupportedAlgorithm(string algorithm)
         {
             // do not throw if algorithm is null or empty to stay in sync with CryptoProviderFactory.IsSupportedAlgorithm.
             return CryptoProviderFactory.IsSupportedAlgorithm(algorithm, this);
-        }
-
-        /// <summary>
-        /// Sets the <see cref="InternalId"/> to value of <see cref="SecurityKey"/>'s JWK thumbprint if it can be computed, otherwise sets the <see cref="InternalId"/> to <see cref="string.Empty"/>.
-        /// </summary>
-        private void SetInternalId()
-        {
-            _internalId = new Lazy<string>(() =>
-            {
-                if (CanComputeJwkThumbprint())
-                    return Base64UrlEncoder.Encode(ComputeJwkThumbprint());
-                else
-                    return string.Empty;
-            });
         }
     }
 }

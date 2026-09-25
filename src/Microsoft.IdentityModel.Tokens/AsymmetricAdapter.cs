@@ -2,58 +2,45 @@
 // Licensed under the MIT License.
 
 using System;
+#if NET6_0_OR_GREATER
+using System.Buffers;
+using System.Diagnostics;
+#endif
 using System.Security.Cryptography;
 using Microsoft.IdentityModel.Logging;
-
-#if NET45
-using System.Reflection;
-#endif
-
-#if NET461 || NET462 || NET472 || NETSTANDARD2_0 || NET6_0
-using System.Security.Cryptography.X509Certificates;
-#endif
 
 namespace Microsoft.IdentityModel.Tokens
 {
     delegate byte[] EncryptDelegate(byte[] bytes);
     delegate byte[] DecryptDelegate(byte[] bytes);
     delegate byte[] SignDelegate(byte[] bytes);
+    delegate byte[] SignUsingOffsetDelegate(byte[] bytes, int offset, int count);
+#if NET6_0_OR_GREATER
+    delegate bool SignUsingSpanDelegate(ReadOnlySpan<byte> bytes, Span<byte> signature, out int bytesWritten);
+#endif
     delegate bool VerifyDelegate(byte[] bytes, byte[] signature);
-    delegate bool VerifyDelegateWithLength(byte[] bytes, int start, int length, byte[] signature);
+    delegate bool VerifyUsingOffsetDelegate(byte[] bytes, int offset, int count, byte[] signature);
 
     /// <summary>
-    /// This adapter abstracts the 'RSA' differences between versions of .Net targets.
+    /// This adapter abstracts the 'RSA' differences between versions of .NET targets.
     /// </summary>
     internal class AsymmetricAdapter : IDisposable
     {
-#if NET45
-        // For users that have built targeting 4.5.1, 4.5.2 or 4.6.0 they will bind to our 4.5 target.
-        // It is possible for the application to pass the call to X509Certificate2.GetRSAPublicKey() or X509Certificate2.GetRSAPrivateKey()
-        // which returns RSACng(). Our 4.5 target doesn't know about this type and sees it as RSA, then things start to go bad.
-        // We use reflection to detect that 4.6+ is available and access the appropriate signing or verifying methods.
-        private static Type _hashAlgorithmNameType = typeof(object).Assembly.GetType("System.Security.Cryptography.HashAlgorithmName", false);
-        private static Type _rsaEncryptionPaddingType = typeof(object).Assembly.GetType("System.Security.Cryptography.RSAEncryptionPadding", false);
-        private static Type _rsaSignaturePaddingType = typeof(object).Assembly.GetType("System.Security.Cryptography.RSASignaturePadding", false);
-
-        private Func<RSA, byte[], byte[]> _rsaDecrypt45Method;
-        private Func<RSA, byte[], byte[]> _rsaEncrypt45Method;
-        private Func<RSA, byte[], string, byte[]> _rsaPkcs1SignMethod;
-        private Func<RSA, byte[], byte[], string, bool> _rsaPkcs1VerifyMethod;
-        private string _lightUpHashAlgorithmName = string.Empty;
-        private const string _dsaCngTypeName = "System.Security.Cryptography.DSACng";
-        private const string _rsaCngTypeName = "System.Security.Cryptography.RSACng";
-#endif
-
 #if DESKTOP
-        private bool _useRSAOeapPadding = false;
+        private bool _useRSAOeapPadding;
 #endif
-        private bool _disposeCryptoOperators = false;
-        private bool _disposed = false;
-        private DecryptDelegate DecryptFunction = DecryptFunctionNotFound;
-        private EncryptDelegate EncryptFunction = EncryptFunctionNotFound;
-        private SignDelegate SignatureFunction = SignatureFunctionNotFound;
-        private VerifyDelegate VerifyFunction = VerifyFunctionNotFound;
-        private VerifyDelegateWithLength VerifyFunctionWithLength = VerifyFunctionWithLengthNotFound;
+        private bool _disposeCryptoOperators;
+        private bool _disposed;
+        private object _mlDsaSyncLock;
+        private DecryptDelegate _decryptFunction = DecryptFunctionNotFound;
+        private EncryptDelegate _encryptFunction = EncryptFunctionNotFound;
+        private SignDelegate _signFunction = SignFunctionNotFound;
+        private SignUsingOffsetDelegate _signUsingOffsetFunction = SignUsingOffsetNotFound;
+#if NET6_0_OR_GREATER
+        private SignUsingSpanDelegate _signUsingSpanFunction = SignUsingSpanNotFound;
+#endif
+        private VerifyDelegate _verifyFunction = VerifyNotFound;
+        private VerifyUsingOffsetDelegate _verifyUsingOffsetFunction = VerifyUsingOffsetNotFound;
 
         // Encryption algorithms do not need a HashAlgorithm, this is called by RSAKeyWrap
         internal AsymmetricAdapter(SecurityKey key, string algorithm, bool requirePrivateKey)
@@ -61,8 +48,23 @@ namespace Microsoft.IdentityModel.Tokens
         {
         }
 
-        // This constructor will be used by NET45 for signing and for RSAKeyWrap
-        internal AsymmetricAdapter(SecurityKey key, string algorithm, HashAlgorithm hashAlgorithm, bool requirePrivateKey)
+        internal AsymmetricAdapter(
+            SecurityKey key,
+            string algorithm,
+            HashAlgorithm hashAlgorithm,
+            HashAlgorithmName hashAlgorithmName,
+            bool requirePrivateKey)
+            : this(key, algorithm, hashAlgorithm, requirePrivateKey)
+        {
+
+            HashAlgorithmName = hashAlgorithmName;
+        }
+
+        internal AsymmetricAdapter(
+            SecurityKey key,
+            string algorithm,
+            HashAlgorithm hashAlgorithm,
+            bool requirePrivateKey)
         {
             HashAlgorithm = hashAlgorithm;
 
@@ -86,21 +88,35 @@ namespace Microsoft.IdentityModel.Tokens
                         InitializeUsingX509SecurityKey(x509SecurityKeyFromJsonWebKey, algorithm, requirePrivateKey);
                     else if (securityKey is ECDsaSecurityKey edcsaSecurityKeyFromJsonWebKey)
                         InitializeUsingEcdsaSecurityKey(edcsaSecurityKeyFromJsonWebKey);
+                    else if (securityKey is MlDsaSecurityKey mlDsaSecurityKeyFromJsonWebKey)
+                        InitializeUsingMlDsaSecurityKey(mlDsaSecurityKeyFromJsonWebKey, requirePrivateKey);
                     else
-                        throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10684, LogHelper.MarkAsNonPII(algorithm), key)));
+                        throw LogHelper.LogExceptionMessage(
+                            new NotSupportedException(
+                                LogHelper.FormatInvariant(
+                                    LogMessages.IDX10684,
+                                    LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(key.KeyId))));
                 }
             }
             else if (key is ECDsaSecurityKey ecdsaKey)
             {
                 InitializeUsingEcdsaSecurityKey(ecdsaKey);
             }
+            else if (key is MlDsaSecurityKey mlDsaKey)
+            {
+                InitializeUsingMlDsaSecurityKey(mlDsaKey, requirePrivateKey);
+            }
             else
-                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10684, LogHelper.MarkAsNonPII(algorithm), key)));
+                throw LogHelper.LogExceptionMessage(
+                    new NotSupportedException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX10684,
+                            LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(key.KeyId))));
         }
 
         internal byte[] Decrypt(byte[] data)
         {
-            return DecryptFunction(data);
+            return _decryptFunction(data);
         }
 
         internal static byte[] DecryptFunctionNotFound(byte[] _)
@@ -110,7 +126,7 @@ namespace Microsoft.IdentityModel.Tokens
         }
 
         /// <summary>
-        /// Calls <see cref="Dispose(bool)"/> and <see cref="GC.SuppressFinalize"/>
+        /// Calls <see cref="Dispose(bool)"/> and <see cref="GC.SuppressFinalize"/>.
         /// </summary>
         public void Dispose()
         {
@@ -129,6 +145,9 @@ namespace Microsoft.IdentityModel.Tokens
                     {
                         if (ECDsa != null)
                             ECDsa.Dispose();
+
+                        if (MLDsa != null)
+                            MLDsa.Dispose();
 #if DESKTOP
                         if (RsaCryptoServiceProviderProxy != null)
                             RsaCryptoServiceProviderProxy.Dispose();
@@ -142,9 +161,11 @@ namespace Microsoft.IdentityModel.Tokens
 
         private ECDsa ECDsa { get; set; }
 
+        private MLDsa MLDsa { get; set; }
+
         internal byte[] Encrypt(byte[] data)
         {
-            return EncryptFunction(data);
+            return _encryptFunction(data);
         }
 
         internal static byte[] EncryptFunctionNotFound(byte[] _)
@@ -158,16 +179,55 @@ namespace Microsoft.IdentityModel.Tokens
         private void InitializeUsingEcdsaSecurityKey(ECDsaSecurityKey ecdsaSecurityKey)
         {
             ECDsa = ecdsaSecurityKey.ECDsa;
-            SignatureFunction = SignWithECDsa;
-            VerifyFunction = VerifyWithECDsa;
-            VerifyFunctionWithLength = VerifyWithECDsaWithLength;
+            _signFunction = SignECDsa;
+            _signUsingOffsetFunction = SignUsingOffsetECDsa;
+#if NET6_0_OR_GREATER
+            _signUsingSpanFunction = SignUsingSpanECDsa;
+#endif
+            _verifyFunction = VerifyECDsa;
+            _verifyUsingOffsetFunction = VerifyUsingOffsetECDsa;
+        }
+
+        private void InitializeUsingMlDsaSecurityKey(MlDsaSecurityKey mlDsaSecurityKey, bool requirePrivateKey)
+        {
+            InitializeUsingMlDsa(mlDsaSecurityKey.MLDsa, requirePrivateKey);
+        }
+
+        private void InitializeUsingMlDsa(MLDsa mlDsa, bool includePrivateKey)
+        {
+            // Clone the MLDsa instance so each adapter holds an independent copy.
+            // MLDsa instance methods are not guaranteed thread-safe, and multiple
+            // adapters from the object pool may reference the same source key.
+            MLDsa clone = MlDsaAdapter.CloneMlDsa(mlDsa, includePrivateKey);
+
+            if (clone is not null)
+            {
+                // Clone succeeded — each adapter owns its independent instance.
+                MLDsa = clone;
+                _disposeCryptoOperators = true;
+            }
+            else
+            {
+                // Key is non-exportable (e.g., HSM-backed) — share the original
+                // instance and serialize access with a lock.
+                MLDsa = mlDsa;
+                _mlDsaSyncLock = new object();
+            }
+
+            _signFunction = SignMlDsa;
+            _signUsingOffsetFunction = SignUsingOffsetMlDsa;
+#if NET6_0_OR_GREATER
+            _signUsingSpanFunction = SignUsingSpanMlDsa;
+#endif
+            _verifyFunction = VerifyMlDsa;
+            _verifyUsingOffsetFunction = VerifyUsingOffsetMlDsa;
         }
 
         private void InitializeUsingRsa(RSA rsa, string algorithm)
         {
             // The return value for X509Certificate2.GetPrivateKey OR X509Certificate2.GetPublicKey.Key is a RSACryptoServiceProvider
             // These calls return an AsymmetricAlgorithm which doesn't have API's to do much and need to be cast.
-            // RSACryptoServiceProvider is wrapped with RSACryptoServiceProviderProxy as some CryptoServideProviders (CSP's) do
+            // RSACryptoServiceProvider is wrapped with RSACryptoServiceProviderProxy as some CryptoServiceProviders (CSP's) do
             // not natively support SHA2.
 #if DESKTOP
             if (rsa is RSACryptoServiceProvider rsaCryptoServiceProvider)
@@ -176,46 +236,18 @@ namespace Microsoft.IdentityModel.Tokens
                                   || algorithm.Equals(SecurityAlgorithms.RsaOaepKeyWrap);
 
                 RsaCryptoServiceProviderProxy = new RSACryptoServiceProviderProxy(rsaCryptoServiceProvider);
-                DecryptFunction = DecryptWithRsaCryptoServiceProviderProxy;
-                EncryptFunction = EncryptWithRsaCryptoServiceProviderProxy;
-                SignatureFunction = SignWithRsaCryptoServiceProviderProxy;
-                VerifyFunction = VerifyWithRsaCryptoServiceProviderProxy;
-#if NET461_OR_GREATER
-                VerifyFunctionWithLength = VerifyWithRsaCryptoServiceProviderProxyWithLength;
-#endif
+                _decryptFunction = DecryptWithRsaCryptoServiceProviderProxy;
+                _encryptFunction = EncryptWithRsaCryptoServiceProviderProxy;
+                _signFunction = SignWithRsaCryptoServiceProviderProxy;
+                _signUsingOffsetFunction = SignWithRsaCryptoServiceProviderProxyUsingOffset;
+                _verifyFunction = VerifyWithRsaCryptoServiceProviderProxy;
+                _verifyUsingOffsetFunction = VerifyWithRsaCryptoServiceProviderProxyUsingOffset;
                 // RSACryptoServiceProviderProxy will track if a new RSA object is created and dispose appropriately.
                 _disposeCryptoOperators = true;
                 return;
             }
 #endif
 
-#if NET45
-            // This case required the user to get a RSA object by calling
-            // X509Certificate2.GetRSAPrivateKey() OR X509Certificate2.GetRSAPublicKey()
-            // This requires 4.6+ to be installed. If a dependent library is targeting 4.5, 4.5.1, 4.5.2 or 4.6
-            // they will bind to our Net45 target, but the type is RSACng.
-            // The 'lightup' code will bind to the correct operators.
-            else if (rsa.GetType().ToString().Equals(_rsaCngTypeName) && IsRsaCngSupported())
-            {
-                _useRSAOeapPadding = algorithm.Equals(SecurityAlgorithms.RsaOAEP)
-                                  || algorithm.Equals(SecurityAlgorithms.RsaOaepKeyWrap);
-
-                _lightUpHashAlgorithmName = GetLightUpHashAlgorithmName();
-                DecryptFunction = DecryptNet45;
-                EncryptFunction = EncryptNet45;
-                SignatureFunction = Pkcs1SignData;
-                VerifyFunction = Pkcs1VerifyData;
-                RSA = rsa;
-                return;
-            }
-            else
-            {
-                // In NET45 we only support RSACryptoServiceProvider or "System.Security.Cryptography.RSACng"
-                throw LogHelper.LogExceptionMessage(new NotSupportedException(LogHelper.FormatInvariant(LogMessages.IDX10687, LogHelper.MarkAsNonPII(typeof(RSACryptoServiceProvider).ToString()), LogHelper.MarkAsNonPII(_rsaCngTypeName), LogHelper.MarkAsNonPII(rsa.GetType().ToString()))));
-            }
-#endif
-
-#if NET461 || NET462 || NET472 || NETSTANDARD2_0 || NET6_0
             if (algorithm.Equals(SecurityAlgorithms.RsaSsaPssSha256) ||
                 algorithm.Equals(SecurityAlgorithms.RsaSsaPssSha256Signature) ||
                 algorithm.Equals(SecurityAlgorithms.RsaSsaPssSha384) ||
@@ -235,12 +267,15 @@ namespace Microsoft.IdentityModel.Tokens
                         ? RSAEncryptionPadding.OaepSHA1
                         : RSAEncryptionPadding.Pkcs1;
             RSA = rsa;
-            DecryptFunction = DecryptWithRsa;
-            EncryptFunction = EncryptWithRsa;
-            SignatureFunction = SignWithRsa;
-            VerifyFunction = VerifyWithRsa;
-            VerifyFunctionWithLength = VerifyWithRsaWithLength;
+            _decryptFunction = DecryptWithRsa;
+            _encryptFunction = EncryptWithRsa;
+            _signFunction = SignRsa;
+            _signUsingOffsetFunction = SignUsingOffsetRsa;
+#if NET6_0_OR_GREATER
+            _signUsingSpanFunction = SignUsingSpanRsa;
 #endif
+            _verifyFunction = VerifyRsa;
+            _verifyUsingOffsetFunction = VerifyUsingOffsetRsa;
         }
 
         private void InitializeUsingRsaSecurityKey(RsaSecurityKey rsaSecurityKey, string algorithm)
@@ -251,8 +286,11 @@ namespace Microsoft.IdentityModel.Tokens
             }
             else
             {
-#if NET472 || NET6_0
+#if NET472 || NET6_0_OR_GREATER
                 var rsa = RSA.Create(rsaSecurityKey.Parameters);
+#elif  NET462
+                var rsa = new RSACng();
+                rsa.ImportParameters(rsaSecurityKey.Parameters);
 #else
                 var rsa = RSA.Create();
                 rsa.ImportParameters(rsaSecurityKey.Parameters);
@@ -262,72 +300,280 @@ namespace Microsoft.IdentityModel.Tokens
             }
         }
 
-        private void InitializeUsingX509SecurityKey(X509SecurityKey x509SecurityKey, string algorithm, bool requirePrivateKey)
+        private void InitializeUsingX509SecurityKey(
+            X509SecurityKey x509SecurityKey,
+            string algorithm,
+            bool requirePrivateKey)
+        {
+            if (x509SecurityKey.MlDsaPublicKey != null)
+            {
+                InitializeUsingX509MlDsa(x509SecurityKey, algorithm, requirePrivateKey);
+            }
+            else if (x509SecurityKey.PublicKey is RSA)
+            {
+                InitializeUsingX509Rsa(x509SecurityKey, algorithm, requirePrivateKey);
+            }
+            else if (x509SecurityKey.PublicKey is ECDsa ecDsa)
+            {
+                InitializeUsingEcdsaSecurityKey(new ECDsaSecurityKey(ecDsa));
+            }
+            else
+            {
+                // Certificate key type is not recognized (not RSA, ECDSA, or ML-DSA).
+                throw LogHelper.LogExceptionMessage(
+                    new NotSupportedException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX10725,
+                            LogHelper.MarkAsNonPII(algorithm),
+                            LogHelper.MarkAsNonPII(x509SecurityKey.KeyId))));
+            }
+        }
+
+        private void InitializeUsingX509MlDsa(
+            X509SecurityKey x509SecurityKey,
+            string algorithm,
+            bool requirePrivateKey)
+        {
+            MLDsa mlDsa = requirePrivateKey ? x509SecurityKey.MlDsaPrivateKey : x509SecurityKey.MlDsaPublicKey;
+            if (mlDsa == null)
+                throw LogHelper.LogExceptionMessage(
+                    new InvalidOperationException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX10723,
+                            LogHelper.MarkAsNonPII(algorithm),
+                            LogHelper.MarkAsNonPII(x509SecurityKey.KeyId))));
+
+            InitializeUsingMlDsa(mlDsa, requirePrivateKey);
+        }
+
+        private void InitializeUsingX509Rsa(
+            X509SecurityKey x509SecurityKey,
+            string algorithm,
+            bool requirePrivateKey)
         {
             if (requirePrivateKey)
+            {
+                if (x509SecurityKey.PrivateKey == null)
+                    throw LogHelper.LogExceptionMessage(
+                        new InvalidOperationException(
+                            LogHelper.FormatInvariant(
+                                LogMessages.IDX10638,
+                                LogHelper.MarkAsNonPII(x509SecurityKey.KeyId))));
+
                 InitializeUsingRsa(x509SecurityKey.PrivateKey as RSA, algorithm);
+            }
             else
+            {
                 InitializeUsingRsa(x509SecurityKey.PublicKey as RSA, algorithm);
+            }
         }
 
         private RSA RSA { get; set; }
 
         internal byte[] Sign(byte[] bytes)
         {
-            return SignatureFunction(bytes);
+            return _signFunction(bytes);
         }
 
-        private static byte[] SignatureFunctionNotFound(byte[] _)
+#if NET6_0_OR_GREATER
+        internal bool SignUsingSpan(
+            ReadOnlySpan<byte> data,
+            Span<byte> destination,
+            out int bytesWritten)
+        {
+            return _signUsingSpanFunction(data, destination, out bytesWritten);
+        }
+#endif
+
+        internal byte[] SignUsingOffset(byte[] bytes, int offset, int count)
+        {
+            return _signUsingOffsetFunction(bytes, offset, count);
+        }
+
+        private static byte[] SignFunctionNotFound(byte[] _)
         {
             // we should never get here, its a bug if we do.
             throw LogHelper.LogExceptionMessage(new CryptographicException(LogMessages.IDX10685));
         }
 
-        private byte[] SignWithECDsa(byte[] bytes)
+        private static byte[] SignUsingOffsetNotFound(byte[] b, int c, int d)
+        {
+            // we should never get here, its a bug if we do.
+            throw LogHelper.LogExceptionMessage(new CryptographicException(LogMessages.IDX10685));
+        }
+
+#if NET6_0_OR_GREATER
+#pragma warning disable CA1801 // Review unused parameters
+        private static bool SignUsingSpanNotFound(
+            ReadOnlySpan<byte> data,
+            Span<byte> destination,
+            out int bytesWritten)
+#pragma warning restore CA1801 // Review unused parameters
+        {
+            // we should never get here, its a bug if we do.
+            throw LogHelper.LogExceptionMessage(new CryptographicException(LogMessages.IDX10685));
+        }
+#endif
+
+        private byte[] SignECDsa(byte[] bytes)
         {
             return ECDsa.SignHash(HashAlgorithm.ComputeHash(bytes));
         }
 
+#if NET6_0_OR_GREATER
+        internal bool SignUsingSpanECDsa(
+            ReadOnlySpan<byte> data,
+            Span<byte> destination,
+            out int bytesWritten)
+        {
+            // ECDSA.TrySignData will return true and set bytesWritten = 64, if destination is null.
+            if (destination.Length == 0)
+            {
+                bytesWritten = 0;
+                return false;
+            }
+
+            bool success = ECDsa.TrySignData(data, destination, HashAlgorithmName, out bytesWritten);
+            if (!success || bytesWritten == 0)
+                return false;
+
+            return destination.Length >= bytesWritten;
+        }
+#endif
+
+        private byte[] SignUsingOffsetECDsa(byte[] bytes, int offset, int count)
+        {
+            return ECDsa.SignHash(HashAlgorithm.ComputeHash(bytes, offset, count));
+        }
+
+        private byte[] SignMlDsa(byte[] bytes)
+        {
+            if (_mlDsaSyncLock is not null)
+            {
+                lock (_mlDsaSyncLock)
+                    return MLDsa.SignData(bytes, context: null);
+            }
+
+            return MLDsa.SignData(bytes, context: null);
+        }
+
+        internal bool SignUsingSpanMlDsa(
+            ReadOnlySpan<byte> data,
+            Span<byte> destination,
+            out int bytesWritten)
+        {
+            int signatureSize = MLDsa.Algorithm.SignatureSizeInBytes;
+            if (destination.Length < signatureSize)
+            {
+                bytesWritten = 0;
+                return false;
+            }
+
+            // MLDsa.SignData requires destination to be exactly SignatureSizeInBytes.
+            if (_mlDsaSyncLock is not null)
+            {
+                lock (_mlDsaSyncLock)
+                    MLDsa.SignData(data, destination.Slice(0, signatureSize), context: default);
+            }
+            else
+            {
+                MLDsa.SignData(data, destination.Slice(0, signatureSize), context: default);
+            }
+
+            bytesWritten = signatureSize;
+            return true;
+        }
+
+        private byte[] SignUsingOffsetMlDsa(byte[] bytes, int offset, int count)
+        {
+            int signatureSize = MLDsa.Algorithm.SignatureSizeInBytes;
+            byte[] signature = new byte[signatureSize];
+
+            if (_mlDsaSyncLock is not null)
+            {
+                lock (_mlDsaSyncLock)
+                    MLDsa.SignData(
+                        new ReadOnlySpan<byte>(bytes, offset, count),
+                        signature.AsSpan(),
+                        context: default);
+            }
+            else
+            {
+                MLDsa.SignData(
+                    new ReadOnlySpan<byte>(bytes, offset, count),
+                    signature.AsSpan(),
+                    context: default);
+            }
+
+            return signature;
+        }
+
         internal bool Verify(byte[] bytes, byte[] signature)
         {
-            return VerifyFunction(bytes, signature);
+            return _verifyFunction(bytes, signature);
         }
 
-        internal bool Verify(byte[] bytes, int start, int length, byte[] signature)
+        internal bool VerifyUsingOffset(byte[] bytes, int offset, int count, byte[] signature)
         {
-            return VerifyFunctionWithLength(bytes, start, length, signature);
+            return _verifyUsingOffsetFunction(bytes, offset, count, signature);
         }
 
-        private static bool VerifyFunctionNotFound(byte[] bytes, byte[] signature)
-        {
-            // we should never get here, its a bug if we do.
-            throw LogHelper.LogExceptionMessage(new NotSupportedException(LogMessages.IDX10686));
-        }
-
-        private static bool VerifyFunctionWithLengthNotFound(byte[] bytes, int start, int length, byte[] signature)
+        private static bool VerifyNotFound(byte[] bytes, byte[] signature)
         {
             // we should never get here, its a bug if we do.
             throw LogHelper.LogExceptionMessage(new NotSupportedException(LogMessages.IDX10686));
         }
 
-        private bool VerifyWithECDsa(byte[] bytes, byte[] signature)
+        private static bool VerifyUsingOffsetNotFound(byte[] bytes, int offset, int count, byte[] signature)
         {
+            // we should never get here, its a bug if we do.
+            throw LogHelper.LogExceptionMessage(new NotSupportedException(LogMessages.IDX10686));
+        }
+
+        private bool VerifyECDsa(byte[] bytes, byte[] signature)
+        {
+#if NET6_0_OR_GREATER
+            return VerifyUsingSpan(isRSA: false, bytes, signature);
+#else
             return ECDsa.VerifyHash(HashAlgorithm.ComputeHash(bytes), signature);
+#endif
         }
 
-        private bool VerifyWithECDsaWithLength(byte[] bytes, int start, int length, byte[] signature)
+        private bool VerifyUsingOffsetECDsa(byte[] bytes, int offset, int count, byte[] signature)
         {
-            return ECDsa.VerifyHash(HashAlgorithm.ComputeHash(bytes, start, length), signature);
+#if NET6_0_OR_GREATER
+            return VerifyUsingSpan(isRSA: false, bytes.AsSpan(offset, count), signature);
+#else
+            return ECDsa.VerifyHash(HashAlgorithm.ComputeHash(bytes, offset, count), signature);
+#endif
         }
 
-#region NET61+ related code
-#if NET461 || NET462 || NET472 || NETSTANDARD2_0 || NET6_0
-
-        // HasAlgorithmName was introduced into Net46
-        internal AsymmetricAdapter(SecurityKey key, string algorithm, HashAlgorithm hashAlgorithm, HashAlgorithmName hashAlgorithmName, bool requirePrivateKey)
-            : this(key, algorithm, hashAlgorithm, requirePrivateKey)
+        private bool VerifyMlDsa(byte[] bytes, byte[] signature)
         {
-            HashAlgorithmName = hashAlgorithmName;
+            if (_mlDsaSyncLock is not null)
+            {
+                lock (_mlDsaSyncLock)
+                    return MLDsa.VerifyData(bytes, signature, context: null);
+            }
+
+            return MLDsa.VerifyData(bytes, signature, context: null);
+        }
+
+        private bool VerifyUsingOffsetMlDsa(byte[] bytes, int offset, int count, byte[] signature)
+        {
+            if (_mlDsaSyncLock is not null)
+            {
+                lock (_mlDsaSyncLock)
+                    return MLDsa.VerifyData(
+                        new ReadOnlySpan<byte>(bytes, offset, count),
+                        signature.AsSpan(),
+                        context: default);
+            }
+
+            return MLDsa.VerifyData(
+                new ReadOnlySpan<byte>(bytes, offset, count),
+                signature.AsSpan(),
+                context: default);
         }
 
         private byte[] DecryptWithRsa(byte[] bytes)
@@ -346,24 +592,73 @@ namespace Microsoft.IdentityModel.Tokens
 
         private RSASignaturePadding RSASignaturePadding { get; set; }
 
-        private byte[] SignWithRsa(byte[] bytes)
+        private byte[] SignRsa(byte[] bytes)
         {
             return RSA.SignHash(HashAlgorithm.ComputeHash(bytes), HashAlgorithmName, RSASignaturePadding);
         }
 
-        private bool VerifyWithRsa(byte[] bytes, byte[] signature)
+#if NET6_0_OR_GREATER
+        internal bool SignUsingSpanRsa(ReadOnlySpan<byte> data, Span<byte> destination, out int bytesWritten)
         {
-            return RSA.VerifyHash(HashAlgorithm.ComputeHash(bytes), signature, HashAlgorithmName, RSASignaturePadding);
-        }
-
-        private bool VerifyWithRsaWithLength(byte[] bytes, int start, int length, byte[] signature)
-        {
-            return RSA.VerifyHash(HashAlgorithm.ComputeHash(bytes, start, length), signature, HashAlgorithmName, RSASignaturePadding);
+            return RSA.TrySignData(data, destination, HashAlgorithmName, RSASignaturePadding, out bytesWritten);
         }
 #endif
-#endregion
 
-#region DESKTOP related code
+        private byte[] SignUsingOffsetRsa(byte[] bytes, int offset, int count)
+        {
+            return RSA.SignData(bytes, offset, count, HashAlgorithmName, RSASignaturePadding);
+        }
+
+        private bool VerifyRsa(byte[] bytes, byte[] signature)
+        {
+#if NET6_0_OR_GREATER
+            return VerifyUsingSpan(isRSA: true, bytes, signature);
+#else
+            return RSA.VerifyHash(HashAlgorithm.ComputeHash(bytes), signature, HashAlgorithmName, RSASignaturePadding);
+#endif
+        }
+
+        private bool VerifyUsingOffsetRsa(byte[] bytes, int offset, int count, byte[] signature)
+        {
+#if NET6_0_OR_GREATER
+            return VerifyUsingSpan(isRSA: true, bytes.AsSpan(offset, count), signature);
+#else
+            return RSA.VerifyHash(
+                HashAlgorithm.ComputeHash(bytes, offset, count),
+                signature,
+                HashAlgorithmName,
+                RSASignaturePadding);
+#endif
+        }
+
+#if NET6_0_OR_GREATER
+        private bool VerifyUsingSpan(bool isRSA, ReadOnlySpan<byte> bytes, byte[] signature)
+        {
+            int hashByteLength = HashAlgorithm.HashSize / 8;
+            byte[] array = null;
+            Span<byte> hash = hashByteLength <= 256 ? stackalloc byte[256] : array = ArrayPool<byte>.Shared.Rent(hashByteLength);
+            hash = hash.Slice(0, hashByteLength);
+
+            try
+            {
+                bool hashResult = HashAlgorithm.TryComputeHash(bytes, hash, out int bytesWritten);
+                Debug.Assert(hashResult && bytesWritten == hashByteLength, "HashAlgorithm.TryComputeHash failed");
+
+                return isRSA ?
+                    RSA.VerifyHash(hash, signature, HashAlgorithmName, RSASignaturePadding) :
+                    ECDsa.VerifyHash(hash, signature);
+            }
+            finally
+            {
+                if (array is not null)
+                {
+                    ArrayPool<byte>.Shared.Return(array, clearArray: true);
+                }
+            }
+        }
+#endif
+
+        #region DESKTOP related code
 #if DESKTOP
         internal byte[] DecryptWithRsaCryptoServiceProviderProxy(byte[] bytes)
         {
@@ -381,259 +676,22 @@ namespace Microsoft.IdentityModel.Tokens
         {
             return RsaCryptoServiceProviderProxy.SignData(bytes, HashAlgorithm);
         }
+        internal byte[] SignWithRsaCryptoServiceProviderProxyUsingOffset(byte[] bytes, int offset, int length)
+        {
+            return RsaCryptoServiceProviderProxy.SignData(bytes, offset, length, HashAlgorithm);
+        }
 
         private bool VerifyWithRsaCryptoServiceProviderProxy(byte[] bytes, byte[] signature)
         {
             return RsaCryptoServiceProviderProxy.VerifyData(bytes, HashAlgorithm, signature);
         }
 
-    #if NET461_OR_GREATER
-        private bool VerifyWithRsaCryptoServiceProviderProxyWithLength(byte[] bytes, int offset, int length, byte[] signature)
+        private bool VerifyWithRsaCryptoServiceProviderProxyUsingOffset(byte[] bytes, int offset, int length, byte[] signature)
         {
             return RsaCryptoServiceProviderProxy.VerifyDataWithLength(bytes, offset, length, HashAlgorithm, HashAlgorithmName, signature);
         }
-    #endif
-
 #endif
-#endregion
-
-#region NET45 'lightup' code
-        // the idea here is if a user has defined their application to target 4.6.1+ but some layer in the stack kicks down below, this code builds delegates
-        // for decrypting, encryption, signing and validating when we detect that the instance of RSA is RSACng and RSACng is supported by the framework.
-#if NET45
-        private byte[] DecryptNet45(byte[] bytes)
-        {
-            if (_rsaDecrypt45Method == null)
-            {
-                // Decrypt(byte[] data, RSAEncryptionPadding padding)
-                Type[] encryptionTypes = { typeof(byte[]), _rsaEncryptionPaddingType };
-                MethodInfo encryptMethod = typeof(RSA).GetMethod(
-                    "Decrypt",
-                    BindingFlags.Public | BindingFlags.Instance,
-                    null,
-                    encryptionTypes,
-                    null);
-
-                Type delegateType = typeof(Func<,,,>).MakeGenericType(
-                            typeof(RSA),
-                            typeof(byte[]),
-                            _rsaEncryptionPaddingType,
-                            typeof(byte[]));
-
-                PropertyInfo prop;
-                if (_useRSAOeapPadding)
-                    prop = _rsaEncryptionPaddingType.GetProperty("OaepSHA1", BindingFlags.Static | BindingFlags.Public);
-                else
-                    prop = _rsaEncryptionPaddingType.GetProperty("Pkcs1", BindingFlags.Static | BindingFlags.Public);
-
-                Delegate openDelegate = Delegate.CreateDelegate(delegateType, encryptMethod);
-                _rsaDecrypt45Method = (rsaArg, bytesArg) =>
-                {
-                    object[] args =
-                    {
-                        rsaArg,
-                        bytesArg,
-                        prop.GetValue(null)
-                    };
-
-                    return (byte[])openDelegate.DynamicInvoke(args);
-                };
-            }
-
-            return _rsaDecrypt45Method(RSA, bytes);
-        }
-
-        private byte[] EncryptNet45(byte[] bytes)
-        {
-            if (_rsaEncrypt45Method == null)
-            {
-                // Encrypt(byte[] data, RSAEncryptionPadding padding)
-                Type[] encryptionTypes = { typeof(byte[]), _rsaEncryptionPaddingType };
-                MethodInfo encryptMethod = typeof(RSA).GetMethod(
-                    "Encrypt",
-                    BindingFlags.Public | BindingFlags.Instance,
-                    null,
-                    encryptionTypes,
-                    null);
-
-                Type delegateType = typeof(Func<,,,>).MakeGenericType(
-                            typeof(RSA),
-                            typeof(byte[]),
-                            _rsaEncryptionPaddingType,
-                            typeof(byte[]));
-
-                PropertyInfo prop;
-                if (_useRSAOeapPadding)
-                    prop = _rsaEncryptionPaddingType.GetProperty("OaepSHA1", BindingFlags.Static | BindingFlags.Public);
-                else
-                    prop = _rsaEncryptionPaddingType.GetProperty("Pkcs1", BindingFlags.Static | BindingFlags.Public);
-
-                Delegate openDelegate = Delegate.CreateDelegate(delegateType, encryptMethod);
-                _rsaEncrypt45Method = (rsaArg, bytesArg) =>
-                {
-                    object[] args =
-                    {
-                        rsaArg,
-                        bytesArg,
-                        prop.GetValue(null)
-                    };
-
-                    return (byte[])openDelegate.DynamicInvoke(args);
-                };
-            }
-
-            return _rsaEncrypt45Method(RSA, bytes);
-        }
-
-        private string GetLightUpHashAlgorithmName()
-        {
-            if (HashAlgorithm == null)
-                return "SHA256";
-
-            if (HashAlgorithm.HashSize == 256)
-                return "SHA256";
-
-            if (HashAlgorithm.HashSize == 384)
-                return "SHA384";
-
-            if (HashAlgorithm.HashSize == 512)
-                return "SHA512";
-
-            return HashAlgorithm.ToString();
-        }
-
-        /// <summary>
-        /// The following code determines if RSACng is available on the .Net framework that is installed.
-        /// </summary>
-        private static Type GetSystemCoreType(string namespaceQualifiedTypeName)
-        {
-            Assembly systemCore = typeof(CngKey).Assembly;
-            return systemCore.GetType(namespaceQualifiedTypeName, false);
-        }
-
-        private static bool IsRsaCngSupported()
-        {
-            Type rsaCng = GetSystemCoreType(_rsaCngTypeName);
-
-            // If the type doesn't exist, there can't be good support for it.
-            // (System.Core < 4.6)
-            if (rsaCng == null)
-                return false;
-
-            Type dsaCng = GetSystemCoreType(_dsaCngTypeName);
-
-            // The original implementation of RSACng returned shared objects in the CAPI fallback
-            // pathway. That behavior is hard to test for, since CNG can load all CAPI software keys.
-            // But, since DSACng was added in 4.6.2, and RSACng better guarantees uniqueness in 4.6.2
-            // use that coincidence as a compatibility test.
-            //
-            // If DSACng is missing, RSACng usage might lead to attempting to use Disposed objects
-            // (System.Core < 4.6.2)
-            if (dsaCng == null)
-                return false;
-
-            // Create an RSACng instance and send it to RSAPKCS1KeyExchangeFormatter. It was adjusted to
-            // be CNG-capable for 4.6.2; and other types in that library also are up-to-date.
-            //
-            // If mscorlib can't handle it properly, then other libraries probably can't, so we'll keep
-            // preferring RSACryptoServiceProvider.
-            try
-            {
-                new RSAPKCS1KeyExchangeFormatter((RSA)Activator.CreateInstance(rsaCng)).CreateKeyExchange(new byte[1]);
-            }
-            catch (Exception)
-            {
-                // (mscorlib < 4.6.2)
-                return false;
-            }
-
-            return true;
-        }
-
-        private byte[] Pkcs1SignData(byte[] input)
-        {
-            if (_rsaPkcs1SignMethod == null)
-            {
-                // [X] SignData(byte[] data, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                // [ ] SignData(byte[] data, int offset, int count, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                // [ ] SignData(Stream data, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                Type[] signatureTypes = { typeof(byte[]), _hashAlgorithmNameType, _rsaSignaturePaddingType };
-
-                MethodInfo signDataMethod = typeof(RSA).GetMethod(
-                    "SignData",
-                    BindingFlags.Public | BindingFlags.Instance,
-                    null,
-                    signatureTypes,
-                    null);
-
-                Type delegateType = typeof(Func<,,,,>).MakeGenericType(
-                            typeof(RSA),
-                            typeof(byte[]),
-                            _hashAlgorithmNameType,
-                            _rsaSignaturePaddingType,
-                            typeof(byte[]));
-
-                Delegate openDelegate = Delegate.CreateDelegate(delegateType, signDataMethod);
-                _rsaPkcs1SignMethod = (rsaArg, dataArg, algorithmArg) =>
-                {
-                    object[] args =
-                    {
-                        rsaArg,
-                        dataArg,
-                        Activator.CreateInstance(_hashAlgorithmNameType, algorithmArg),
-                        _rsaSignaturePaddingType.GetProperty("Pkcs1", BindingFlags.Static | BindingFlags.Public).GetValue(null)
-                    };
-
-                    return (byte[])openDelegate.DynamicInvoke(args);
-                };
-            }
-
-            return _rsaPkcs1SignMethod(RSA, input, _lightUpHashAlgorithmName);
-        }
-
-        private bool Pkcs1VerifyData(byte[] input, byte[] signature)
-        {
-            if (_rsaPkcs1VerifyMethod == null)
-            {
-                // [X] VerifyData(byte[] data, byte[] signature, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                // [ ] VerifyData(byte[] data, int offset, int count, byte[] signature, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                // [ ] VerifyData(Stream data, byte[] signature, HashAlgorithmName hashAlgorithmName, RSASignaturePadding padding)
-                Type[] signatureTypes = { typeof(byte[]), typeof(byte[]), _hashAlgorithmNameType, _rsaSignaturePaddingType };
-                MethodInfo verifyDataMethod = typeof(RSA).GetMethod(
-                    "VerifyData",
-                    BindingFlags.Public | BindingFlags.Instance,
-                    null,
-                    signatureTypes,
-                    null);
-
-                Type delegateType = typeof(Func<,,,,,>).MakeGenericType(
-                    typeof(RSA),
-                    typeof(byte[]),
-                    typeof(byte[]),
-                    _hashAlgorithmNameType,
-                    _rsaSignaturePaddingType,
-                    typeof(bool));
-
-                Delegate verifyDelegate = Delegate.CreateDelegate(delegateType, verifyDataMethod);
-                _rsaPkcs1VerifyMethod = (rsaArg, dataArg, signatureArg, algorithmArg) =>
-                {
-                    object[] args =
-                    {
-                        rsaArg,
-                        dataArg,
-                        signatureArg,
-                        Activator.CreateInstance(_hashAlgorithmNameType, algorithmArg),
-                        _rsaSignaturePaddingType.GetProperty("Pkcs1", BindingFlags.Static | BindingFlags.Public).GetValue(null)
-                    };
-
-                    return (bool)verifyDelegate.DynamicInvoke(args);
-                };
-            }
-
-            return _rsaPkcs1VerifyMethod(RSA, input, signature, _lightUpHashAlgorithmName);
-        }
-#endif
-#endregion
+        #endregion
 
     }
 }

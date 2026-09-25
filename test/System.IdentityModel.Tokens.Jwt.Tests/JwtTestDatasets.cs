@@ -1,28 +1,5 @@
-﻿//
-// Copyright (c) Microsoft Corporation.
-// All rights reserved.
-//
-// This code is licensed under the MIT License.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files(the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and / or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions :
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-//
-//------------------------------------------------------------------------------
+﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
 
 using System.Collections.Generic;
 using System.IO;
@@ -162,6 +139,39 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                     },
                     new JwtTheoryData
                     {
+                        TestId = nameof(Default.AsymmetricJws) + "_IssuerSigningKeyResolverUsingConfigurationTakesPriorityOverConfiguration",
+                        Token = Default.AsymmetricJws,
+                        ValidationParameters = new TokenValidationParameters
+                        {
+                            ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(validConfig),
+                            ValidateIssuerSigningKey = true,
+                            RequireSignedTokens = true,
+                            ValidateIssuer = true,
+                            ValidateAudience = false,
+                            ValidateLifetime = false,
+                            IssuerSigningKeyResolverUsingConfiguration = (token, securityToken, kid, validationParameters, configuration) => { return new List<SecurityKey>() { KeyingMaterial.X509SecurityKey2 }; }
+                        },
+                        ExpectedException = ExpectedException.SecurityTokenSignatureKeyNotFoundException("IDX10503: "),
+                    },
+                    new JwtTheoryData
+                    {
+                        TestId = nameof(Default.AsymmetricJws) + "_IssuerSigningKeyResolverUsingConfigurationTakesPriorityOverIssuerSigningKeyResolver",
+                        Token = Default.AsymmetricJws,
+                        ValidationParameters = new TokenValidationParameters
+                        {
+                            ConfigurationManager = new StaticConfigurationManager<OpenIdConnectConfiguration>(validConfig),
+                            ValidateIssuerSigningKey = true,
+                            RequireSignedTokens = true,
+                            ValidateIssuer = true,
+                            ValidateAudience = false,
+                            ValidateLifetime = false,
+                            IssuerSigningKeyResolverUsingConfiguration = (token, securityToken, kid, validationParameters, configuration) => { return new List<SecurityKey>() { KeyingMaterial.X509SecurityKey2 }; },
+                            IssuerSigningKeyResolver = (token, securityToken, kid, validationParameters) => { return new List<SecurityKey>() { KeyingMaterial.DefaultX509Key_2048 }; }
+                        },
+                        ExpectedException = ExpectedException.SecurityTokenSignatureKeyNotFoundException("IDX10503: "),
+                    },
+                    new JwtTheoryData
+                    {
                         TestId = nameof(Default.AsymmetricJws) + "_TVPInvalid_ConfigValid_IssuerSigningKeyValidatorReturnsFalse",
                         Token = Default.AsymmetricJws,
                         ValidationParameters = new TokenValidationParameters
@@ -282,7 +292,7 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                 var validConfig = new OpenIdConnectConfiguration() { TokenEndpoint = Default.Issuer + "/oauth/token", Issuer = Default.Issuer };
                 validConfig.SigningKeys.Add(KeyingMaterial.DefaultX509Key_2048);
 
-                // a special IssuerSigningKeyValidator in the tests below is set to fail if this configuration is used in order
+                // a special SignatureKeyValidator in the tests below is set to fail if this configuration is used in order
                 // to mock issuer signing key validation failure
                 var validConfigKeyValidationFails = new OpenIdConnectConfiguration() { TokenEndpoint = Default.Issuer + "/oauth/token", Issuer = Default.Issuer };
                 validConfigKeyValidationFails.SigningKeys.Add(KeyingMaterial.DefaultX509Key_2048);
@@ -556,6 +566,8 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                     {
                         TestId = nameof(Default.AsymmetricJws) + "_ConfigIssuerInvalid_AadIssuerValidatorThrow_LKGValid",
                         Token = Default.AadAsymmetricJws,
+                        SetupIssuerLkg = true,
+                        SetupIssuerLkgConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(validConfig),
                         ValidationParameters = new TokenValidationParameters
                         {
                             ConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(invalidIssuerConfig, validConfig),
@@ -650,6 +662,8 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                     {
                         TestId = nameof(Default.AsymmetricJws) + "_ConfigInvalid_AadIssuerValidatorThrow_LKGSucceeds_RequestRefreshIssuerInvalid",
                         Token = Default.AadAsymmetricJws,
+                        SetupIssuerLkg = true,
+                        SetupIssuerLkgConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(validConfig),
                         ValidationParameters = new TokenValidationParameters
                         {
                             ConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(invalidIssuerConfig, validConfig, invalidIssuerConfig),
@@ -674,7 +688,7 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                 var validConfig = new OpenIdConnectConfiguration() { TokenEndpoint = Default.Issuer + "oauth/token", Issuer = Default.Issuer };
                 validConfig.SigningKeys.Add(Default.SymmetricSigningKey256);
 
-                // a special IssuerSigningKeyValidator in the tests below is set to fail if this configuration is used in order
+                // a special SignatureKeyValidator in the tests below is set to fail if this configuration is used in order
                 // to mock issuer signing key validation failure
                 var validConfigKeyValidationFails = new OpenIdConnectConfiguration() { TokenEndpoint = Default.Issuer + "/oauth/token", Issuer = Default.Issuer };
                 validConfigKeyValidationFails.SigningKeys.Add(Default.SymmetricSigningKey256);
@@ -962,6 +976,8 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                     {
                         TestId = nameof(aadJwe) + "_ConfigIssuerInvalid_AadIssuerValidatorThrow_LKGValid",
                         Token = aadJwe,
+                        SetupIssuerLkg = true,
+                        SetupIssuerLkgConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(validConfig),
                         ValidationParameters = new TokenValidationParameters
                         {
                             ConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(invalidIssuerConfig, validConfig),
@@ -1047,6 +1063,8 @@ namespace System.IdentityModel.Tokens.Jwt.Tests
                     {
                         TestId = nameof(aadJwe) + "_ConfigInvalid_AadIssuerValidatorThrow_LKGSucceeds_RequestRefreshIssuerInvalid",
                         Token = aadJwe,
+                        SetupIssuerLkg = true,
+                        SetupIssuerLkgConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(validConfig),
                         ValidationParameters = new TokenValidationParameters
                         {
                             ConfigurationManager = new MockConfigurationManager<OpenIdConnectConfiguration>(invalidIssuerConfig, validConfig, invalidIssuerConfig),

@@ -143,11 +143,11 @@ namespace Microsoft.IdentityModel.Protocols.WsFederation
                 var signatureCertData = signatureX509Data.Current.Certificates.GetEnumerator();
                 if (signatureCertData.MoveNext() && !string.IsNullOrWhiteSpace(signatureCertData.Current))
                 {
-                    X509Certificate2 cert = null;
+                    X509Certificate2? cert = null;
 
                     try
                     {
-                        cert = new X509Certificate2(Convert.FromBase64String(signatureCertData.Current));
+                        cert = CertificateHelper.LoadX509Certificate(signatureCertData.Current);
                         signingKeyId = cert.Thumbprint;
                     }
                     catch (CryptographicException)

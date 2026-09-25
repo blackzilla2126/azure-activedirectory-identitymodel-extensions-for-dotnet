@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
+using Microsoft.IdentityModel.Abstractions;
 using Microsoft.IdentityModel.Logging;
 
 namespace Microsoft.IdentityModel.Tokens
@@ -13,7 +14,7 @@ namespace Microsoft.IdentityModel.Tokens
     /// <summary>
     /// AudienceValidator
     /// </summary>
-    public static class Validators
+    public static partial class Validators
     {
         /// <summary>
         /// Validates if a given algorithm for a <see cref="SecurityKey"/> is valid.
@@ -31,10 +32,15 @@ namespace Microsoft.IdentityModel.Tokens
             {
                 if (!validationParameters.AlgorithmValidator(algorithm, securityKey, securityToken, validationParameters))
                 {
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidAlgorithmException(LogHelper.FormatInvariant(LogMessages.IDX10697, LogHelper.MarkAsNonPII(algorithm), securityKey))
+                    SecurityTokenInvalidAlgorithmException ex = new SecurityTokenInvalidAlgorithmException(LogHelper.FormatInvariant(LogMessages.IDX10697, LogHelper.MarkAsNonPII(algorithm), LogHelper.MarkAsNonPII(securityKey?.KeyId)))
                     {
                         InvalidAlgorithm = algorithm,
-                    });
+                    };
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
                 }
 
                 return;
@@ -42,10 +48,15 @@ namespace Microsoft.IdentityModel.Tokens
 
             if (validationParameters.ValidAlgorithms != null && validationParameters.ValidAlgorithms.Any() && !validationParameters.ValidAlgorithms.Contains(algorithm, StringComparer.Ordinal))
             {
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidAlgorithmException(LogHelper.FormatInvariant(LogMessages.IDX10696, LogHelper.MarkAsNonPII(algorithm)))
+                SecurityTokenInvalidAlgorithmException ex = new SecurityTokenInvalidAlgorithmException(LogHelper.FormatInvariant(LogMessages.IDX10696, LogHelper.MarkAsNonPII(algorithm)))
                 {
                     InvalidAlgorithm = algorithm,
-                });
+                };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw ex;
+
+                throw LogHelper.LogExceptionMessage(ex);
             }
         }
 
@@ -68,10 +79,20 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.AudienceValidator != null)
             {
                 if (!validationParameters.AudienceValidator(audiences, securityToken, validationParameters))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidAudienceException(LogHelper.FormatInvariant(LogMessages.IDX10231, securityToken))
+                {
+                    SecurityTokenInvalidAudienceException audienceValidatorException = new SecurityTokenInvalidAudienceException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX10231,
+                            LogHelper.MarkAsUnsafeSecurityArtifact(securityToken, t => t.ToString())))
                     {
                         InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences)
-                    });
+                    };
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw audienceValidatorException;
+
+                    throw LogHelper.LogExceptionMessage(audienceValidatorException);
+                }
 
                 return;
             }
@@ -82,16 +103,44 @@ namespace Microsoft.IdentityModel.Tokens
                 return;
             }
 
+            if (!validationParameters.RequireAudience && !audiences.Any())
+            {
+                LogHelper.LogWarning(LogMessages.IDX10277);
+                return;
+            }
+
             if (audiences == null)
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidAudienceException(LogMessages.IDX10207) { InvalidAudience = null });
+            {
+                SecurityTokenInvalidAudienceException nullAudiencesException = new SecurityTokenInvalidAudienceException(LogMessages.IDX10207) { InvalidAudience = null };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw nullAudiencesException;
+
+                throw LogHelper.LogExceptionMessage(nullAudiencesException);
+            }
 
             if (string.IsNullOrWhiteSpace(validationParameters.ValidAudience) && (validationParameters.ValidAudiences == null))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidAudienceException(LogMessages.IDX10208) { InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences) });
+            {
+                SecurityTokenInvalidAudienceException noValidAudienceException = new SecurityTokenInvalidAudienceException(LogMessages.IDX10208) { InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences) };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw noValidAudienceException;
+
+                throw LogHelper.LogExceptionMessage(noValidAudienceException);
+            }
 
             if (!audiences.Any())
-                throw LogHelper.LogExceptionMessage(
-                    new SecurityTokenInvalidAudienceException(LogHelper.FormatInvariant(LogMessages.IDX10206))
-                    { InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences) });
+            {
+                SecurityTokenInvalidAudienceException emptyAudiencesException = new SecurityTokenInvalidAudienceException(LogHelper.FormatInvariant(LogMessages.IDX10206))
+                {
+                    InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences)
+                };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw emptyAudiencesException;
+
+                throw LogHelper.LogExceptionMessage(emptyAudiencesException);
+            }
 
             // create enumeration of all valid audiences from validationParameters
             IEnumerable<string> validationParametersAudiences;
@@ -106,12 +155,18 @@ namespace Microsoft.IdentityModel.Tokens
             if (AudienceIsValid(audiences, validationParameters, validationParametersAudiences))
                 return;
 
-            SecurityTokenInvalidAudienceException ex = new SecurityTokenInvalidAudienceException(
-                LogHelper.FormatInvariant(LogMessages.IDX10214,
-                    LogHelper.MarkAsNonPII(Utility.SerializeAsSingleCommaDelimitedString(audiences)),
-                    LogHelper.MarkAsNonPII(validationParameters.ValidAudience ?? "null"),
-                    LogHelper.MarkAsNonPII(Utility.SerializeAsSingleCommaDelimitedString(validationParameters.ValidAudiences))))
-            { InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences) };
+            SecurityTokenInvalidAudienceException ex;
+
+            if (AppContextSwitches.DoNotScrubExceptions)
+                ex = new SecurityTokenInvalidAudienceException(
+                    LogHelper.FormatInvariant(LogMessages.IDX10214,
+                        LogHelper.MarkAsNonPII(Utility.SerializeAsSingleCommaDelimitedString(audiences)),
+                        LogHelper.MarkAsNonPII(validationParameters.ValidAudience ?? "null"),
+                        LogHelper.MarkAsNonPII(Utility.SerializeAsSingleCommaDelimitedString(validationParameters.ValidAudiences))))
+                { InvalidAudience = Utility.SerializeAsSingleCommaDelimitedString(audiences) };
+            else
+                ex = new SecurityTokenInvalidAudienceException(
+                    LogHelper.FormatInvariant(LogMessages.IDX10214S));
 
             if (!validationParameters.LogValidationExceptions)
                 throw ex;
@@ -126,15 +181,44 @@ namespace Microsoft.IdentityModel.Tokens
                 if (string.IsNullOrWhiteSpace(tokenAudience))
                     continue;
 
-                foreach (string validAudience in validationParametersAudiences)
+                bool TryMatchAudience(string validAudience)
                 {
                     if (string.IsNullOrWhiteSpace(validAudience))
-                        continue;
+                        return false;
 
                     if (AudiencesMatch(validationParameters, tokenAudience, validAudience))
                     {
-                        LogHelper.LogInformation(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                        if (AppContextSwitches.SuccessValidationLogsAsInformation)
+                        {
+                            if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                                LogHelper.LogInformation(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                        }
+                        else
+                        {
+                            if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+                                LogHelper.LogVerbose(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                        }
+
                         return true;
+                    }
+
+                    return false;
+                }
+
+                if (validationParametersAudiences is IList<string> audienceList)
+                {
+                    for (int i = 0; i < audienceList.Count; i++)
+                    {
+                        if (TryMatchAudience(audienceList[i]))
+                            return true;
+                    }
+                }
+                else
+                {
+                    foreach (string validAudience in validationParametersAudiences)
+                    {
+                        if (TryMatchAudience(validAudience))
+                            return true;
                     }
                 }
             }
@@ -144,18 +228,22 @@ namespace Microsoft.IdentityModel.Tokens
 
         private static bool AudiencesMatch(TokenValidationParameters validationParameters, string tokenAudience, string validAudience)
         {
+            StringComparison comparisonType = validationParameters.IgnoreCaseWhenValidatingAudience
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
             if (validAudience.Length == tokenAudience.Length)
             {
-                if (string.Equals(validAudience, tokenAudience))
+                if (string.Equals(validAudience, tokenAudience, comparisonType))
                     return true;
             }
-            else if (validationParameters.IgnoreTrailingSlashWhenValidatingAudience && AudiencesMatchIgnoringTrailingSlash(tokenAudience, validAudience))
+            else if (validationParameters.IgnoreTrailingSlashWhenValidatingAudience && AudiencesMatchIgnoringTrailingSlash(tokenAudience, validAudience, comparisonType))
                 return true;
 
             return false;
         }
 
-        private static bool AudiencesMatchIgnoringTrailingSlash(string tokenAudience, string validAudience)
+        private static bool AudiencesMatchIgnoringTrailingSlash(string tokenAudience, string validAudience, StringComparison comparisonType)
         {
             int length = -1;
 
@@ -168,9 +256,19 @@ namespace Microsoft.IdentityModel.Tokens
             if (length == -1)
                 return false;
 
-            if (string.CompareOrdinal(validAudience, 0, tokenAudience, 0, length) == 0)
+            if (string.Compare(validAudience, 0, tokenAudience, 0, length, comparisonType) == 0)
             {
-                LogHelper.LogInformation(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                if (AppContextSwitches.SuccessValidationLogsAsInformation)
+                {
+                    if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                        LogHelper.LogInformation(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                }
+                else
+                {
+                    if (LogHelper.IsEnabled(EventLogLevel.Verbose))
+                        LogHelper.LogVerbose(LogMessages.IDX10234, LogHelper.MarkAsNonPII(tokenAudience));
+                }
+
                 return true;
             }
 
@@ -210,7 +308,10 @@ namespace Microsoft.IdentityModel.Tokens
         /// <remarks>An EXACT match is required.</remarks>
         internal static string ValidateIssuer(string issuer, SecurityToken securityToken, TokenValidationParameters validationParameters, BaseConfiguration configuration)
         {
-            return ValidateIssuerAsync(issuer, securityToken, validationParameters, configuration).GetAwaiter().GetResult();
+            ValueTask<string> vt = ValidateIssuerAsync(issuer, securityToken, validationParameters, configuration);
+            return vt.IsCompletedSuccessfully ?
+                vt.Result :
+                vt.AsTask().ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -227,7 +328,7 @@ namespace Microsoft.IdentityModel.Tokens
         /// <exception cref="SecurityTokenInvalidIssuerException">If <see cref="TokenValidationParameters.ValidIssuer"/> is null or whitespace and <see cref="TokenValidationParameters.ValidIssuers"/> is null and <see cref="BaseConfiguration.Issuer"/> is null.</exception>
         /// <exception cref="SecurityTokenInvalidIssuerException">If 'issuer' failed to matched either <see cref="TokenValidationParameters.ValidIssuer"/> or one of <see cref="TokenValidationParameters.ValidIssuers"/> or <see cref="BaseConfiguration.Issuer"/>.</exception>
         /// <remarks>An EXACT match is required.</remarks>
-        internal static async Task<string> ValidateIssuerAsync(
+        internal static async ValueTask<string> ValidateIssuerAsync(
             string issuer,
             SecurityToken securityToken,
             TokenValidationParameters validationParameters,
@@ -252,28 +353,46 @@ namespace Microsoft.IdentityModel.Tokens
             }
 
             if (string.IsNullOrWhiteSpace(issuer))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidIssuerException(LogMessages.IDX10211)
-                    { InvalidIssuer = issuer });
+            {
+                SecurityTokenInvalidIssuerException emptyIssuerException = new SecurityTokenInvalidIssuerException(LogMessages.IDX10211)
+                { InvalidIssuer = issuer };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw emptyIssuerException;
+
+                throw LogHelper.LogExceptionMessage(emptyIssuerException);
+            }
 
             // Throw if all possible places to validate against are null or empty
-            if (   string.IsNullOrWhiteSpace(validationParameters.ValidIssuer)
+            if (string.IsNullOrWhiteSpace(validationParameters.ValidIssuer)
                 && validationParameters.ValidIssuers.IsNullOrEmpty()
                 && string.IsNullOrWhiteSpace(configuration?.Issuer))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidIssuerException(LogMessages.IDX10204)
-                        { InvalidIssuer = issuer });
+            {
+                SecurityTokenInvalidIssuerException noValidIssuerException = new SecurityTokenInvalidIssuerException(LogMessages.IDX10204)
+                { InvalidIssuer = issuer };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw noValidIssuerException;
+
+                throw LogHelper.LogExceptionMessage(noValidIssuerException);
+            }
 
             if (configuration != null)
             {
                 if (string.Equals(configuration.Issuer, issuer))
                 {
-                    LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+                    if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                        LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+
                     return issuer;
                 }
             }
 
             if (string.Equals(validationParameters.ValidIssuer, issuer))
             {
-                LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+                if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                    LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+
                 return issuer;
             }
 
@@ -289,7 +408,9 @@ namespace Microsoft.IdentityModel.Tokens
 
                     if (string.Equals(str, issuer))
                     {
-                        LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+                        if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                            LogHelper.LogInformation(LogMessages.IDX10236, LogHelper.MarkAsNonPII(issuer));
+
                         return issuer;
                     }
                 }
@@ -301,7 +422,7 @@ namespace Microsoft.IdentityModel.Tokens
                     LogHelper.MarkAsNonPII(validationParameters.ValidIssuer ?? "null"),
                     LogHelper.MarkAsNonPII(Utility.SerializeAsSingleCommaDelimitedString(validationParameters.ValidIssuers)),
                     LogHelper.MarkAsNonPII(configuration?.Issuer)))
-                { InvalidIssuer = issuer };
+            { InvalidIssuer = issuer };
 
             if (!validationParameters.LogValidationExceptions)
                 throw ex;
@@ -320,7 +441,7 @@ namespace Microsoft.IdentityModel.Tokens
         /// <exception cref="ArgumentNullException"> if 'validationParameters' is null.</exception>
         public static void ValidateIssuerSecurityKey(SecurityKey securityKey, SecurityToken securityToken, TokenValidationParameters validationParameters)
         {
-            ValidateIssuerSecurityKey(securityKey, securityToken, validationParameters, null);
+            ValidateIssuerSecurityKey(securityKey, securityToken, validationParameters, configuration: null);
         }
 
         /// <summary>
@@ -341,7 +462,14 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.IssuerSigningKeyValidatorUsingConfiguration != null)
             {
                 if (!validationParameters.IssuerSigningKeyValidatorUsingConfiguration(securityKey, securityToken, validationParameters, configuration))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10232, securityKey)) { SigningKey = securityKey });
+                {
+                    SecurityTokenInvalidSigningKeyException ex = new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10232, LogHelper.MarkAsNonPII(securityKey?.KeyId))) { SigningKey = securityKey };
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
 
                 return;
             }
@@ -349,7 +477,14 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.IssuerSigningKeyValidator != null)
             {
                 if (!validationParameters.IssuerSigningKeyValidator(securityKey, securityToken, validationParameters))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10232, securityKey)) { SigningKey = securityKey });
+                {
+                    SecurityTokenInvalidSigningKeyException ex = new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10232, LogHelper.MarkAsNonPII(securityKey?.KeyId))) { SigningKey = securityKey };
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
 
                 return;
             }
@@ -386,19 +521,35 @@ namespace Microsoft.IdentityModel.Tokens
             X509SecurityKey x509SecurityKey = securityKey as X509SecurityKey;
             if (x509SecurityKey?.Certificate is X509Certificate2 cert)
             {
-                DateTime utcNow = DateTime.UtcNow;
+                DateTime utcNow = validationParameters.TimeProvider.GetUtcNow().UtcDateTime;
                 var notBeforeUtc = cert.NotBefore.ToUniversalTime();
                 var notAfterUtc = cert.NotAfter.ToUniversalTime();
 
                 if (notBeforeUtc > DateTimeUtil.Add(utcNow, validationParameters.ClockSkew))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10248, LogHelper.MarkAsNonPII(notBeforeUtc), LogHelper.MarkAsNonPII(utcNow))));
+                {
+                    SecurityTokenInvalidSigningKeyException ex = new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10248, LogHelper.MarkAsNonPII(notBeforeUtc), LogHelper.MarkAsNonPII(utcNow))) { SigningKey = securityKey };
 
-                LogHelper.LogInformation(LogMessages.IDX10250, LogHelper.MarkAsNonPII(notBeforeUtc), LogHelper.MarkAsNonPII(utcNow));
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
+
+                if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                    LogHelper.LogInformation(LogMessages.IDX10250, LogHelper.MarkAsNonPII(notBeforeUtc), LogHelper.MarkAsNonPII(utcNow));
 
                 if (notAfterUtc < DateTimeUtil.Add(utcNow, validationParameters.ClockSkew.Negate()))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10249, LogHelper.MarkAsNonPII(notAfterUtc), LogHelper.MarkAsNonPII(utcNow))));
+                {
+                    SecurityTokenInvalidSigningKeyException ex = new SecurityTokenInvalidSigningKeyException(LogHelper.FormatInvariant(LogMessages.IDX10249, LogHelper.MarkAsNonPII(notAfterUtc), LogHelper.MarkAsNonPII(utcNow))) { SigningKey = securityKey };
 
-                LogHelper.LogInformation(LogMessages.IDX10251, LogHelper.MarkAsNonPII(notAfterUtc), LogHelper.MarkAsNonPII(utcNow));
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
+
+                if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                    LogHelper.LogInformation(LogMessages.IDX10251, LogHelper.MarkAsNonPII(notAfterUtc), LogHelper.MarkAsNonPII(utcNow));
             }
         }
 
@@ -409,11 +560,6 @@ namespace Microsoft.IdentityModel.Tokens
         /// <param name="expires">The 'expiration' time found in the <see cref="SecurityToken"/>.</param>
         /// <param name="securityToken">The <see cref="SecurityToken"/> being validated.</param>
         /// <param name="validationParameters"><see cref="TokenValidationParameters"/> required for validation.</param>
-        /// <exception cref="ArgumentNullException">If 'validationParameters' is null.</exception>
-        /// <exception cref="SecurityTokenNoExpirationException">If 'expires.HasValue' is false and <see cref="TokenValidationParameters.RequireExpirationTime"/> is true.</exception>
-        /// <exception cref="SecurityTokenInvalidLifetimeException">If 'notBefore' is &gt; 'expires'.</exception>
-        /// <exception cref="SecurityTokenNotYetValidException">If 'notBefore' is &gt; DateTime.UtcNow.</exception>
-        /// <exception cref="SecurityTokenExpiredException">If 'expires' is &lt; DateTime.UtcNow.</exception>
         /// <remarks>All time comparisons apply <see cref="TokenValidationParameters.ClockSkew"/>.</remarks>
         public static void ValidateLifetime(DateTime? notBefore, DateTime? expires, SecurityToken securityToken, TokenValidationParameters validationParameters)
         {
@@ -423,8 +569,15 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.LifetimeValidator != null)
             {
                 if (!validationParameters.LifetimeValidator(notBefore, expires, securityToken, validationParameters))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidLifetimeException(LogHelper.FormatInvariant(LogMessages.IDX10230, securityToken))
-                        { NotBefore = notBefore, Expires = expires });
+                {
+                    SecurityTokenInvalidLifetimeException ex = new SecurityTokenInvalidLifetimeException(LogHelper.FormatInvariant(LogMessages.IDX10230, securityToken))
+                    { NotBefore = notBefore, Expires = expires };
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
 
                 return;
             }
@@ -435,24 +588,7 @@ namespace Microsoft.IdentityModel.Tokens
                 return;
             }
 
-            if (!expires.HasValue && validationParameters.RequireExpirationTime)
-                throw LogHelper.LogExceptionMessage(new SecurityTokenNoExpirationException(LogHelper.FormatInvariant(LogMessages.IDX10225, LogHelper.MarkAsNonPII(securityToken == null ? "null" : securityToken.GetType().ToString()))));
-
-            if (notBefore.HasValue && expires.HasValue && (notBefore.Value > expires.Value))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidLifetimeException(LogHelper.FormatInvariant(LogMessages.IDX10224, LogHelper.MarkAsNonPII(notBefore.Value), LogHelper.MarkAsNonPII(expires.Value)))
-                { NotBefore = notBefore, Expires = expires });
-
-            DateTime utcNow = DateTime.UtcNow;
-            if (notBefore.HasValue && (notBefore.Value > DateTimeUtil.Add(utcNow, validationParameters.ClockSkew)))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenNotYetValidException(LogHelper.FormatInvariant(LogMessages.IDX10222, LogHelper.MarkAsNonPII(notBefore.Value), LogHelper.MarkAsNonPII(utcNow)))
-                    { NotBefore = notBefore.Value });
- 
-            if (expires.HasValue && (expires.Value < DateTimeUtil.Add(utcNow, validationParameters.ClockSkew.Negate())))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenExpiredException(LogHelper.FormatInvariant(LogMessages.IDX10223, LogHelper.MarkAsNonPII(expires.Value), LogHelper.MarkAsNonPII(utcNow)))
-                    { Expires = expires.Value });
-
-            // if it reaches here, that means lifetime of the token is valid
-            LogHelper.LogInformation(LogMessages.IDX10239);
+            ValidatorUtilities.ValidateLifetime(notBefore, expires, securityToken, validationParameters);
         }
 
         /// <summary>
@@ -477,7 +613,17 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.TokenReplayValidator != null)
             {
                 if (!validationParameters.TokenReplayValidator(expirationTime, securityToken, validationParameters))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenReplayDetectedException(LogHelper.FormatInvariant(LogMessages.IDX10228, securityToken)));
+                {
+                    SecurityTokenReplayDetectedException ex = new SecurityTokenReplayDetectedException(
+                        LogHelper.FormatInvariant(
+                            LogMessages.IDX10228,
+                            LogHelper.MarkAsUnsafeSecurityArtifact(securityToken, t => t.ToString())));
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
                 return;
             }
 
@@ -491,13 +637,34 @@ namespace Microsoft.IdentityModel.Tokens
             if (validationParameters.TokenReplayCache != null)
             {
                 if (!expirationTime.HasValue)
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenNoExpirationException(LogHelper.FormatInvariant(LogMessages.IDX10227, securityToken)));
+                {
+                    SecurityTokenNoExpirationException ex = new SecurityTokenNoExpirationException(LogHelper.FormatInvariant(LogMessages.IDX10227, securityToken));
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
 
                 if (validationParameters.TokenReplayCache.TryFind(securityToken))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenReplayDetectedException(LogHelper.FormatInvariant(LogMessages.IDX10228, securityToken)));
+                {
+                    SecurityTokenReplayDetectedException ex = new SecurityTokenReplayDetectedException(LogHelper.FormatInvariant(LogMessages.IDX10228, securityToken));
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
 
                 if (!validationParameters.TokenReplayCache.TryAdd(securityToken, expirationTime.Value))
-                    throw LogHelper.LogExceptionMessage(new SecurityTokenReplayAddFailedException(LogHelper.FormatInvariant(LogMessages.IDX10229, securityToken)));
+                {
+                    SecurityTokenReplayAddFailedException ex = new SecurityTokenReplayAddFailedException(LogHelper.FormatInvariant(LogMessages.IDX10229, securityToken));
+
+                    if (!validationParameters.LogValidationExceptions)
+                        throw ex;
+
+                    throw LogHelper.LogExceptionMessage(ex);
+                }
             }
 
             // if it reaches here, that means no token replay is detected.
@@ -552,17 +719,32 @@ namespace Microsoft.IdentityModel.Tokens
             // Note: don't throw an exception for a null or empty token type when a user-defined delegate is set
             // to allow it to extract the actual token type from a different location (e.g from the claims).
             if (string.IsNullOrEmpty(type))
-                throw LogHelper.LogExceptionMessage(new SecurityTokenInvalidTypeException(LogMessages.IDX10256) { InvalidType = null });
+            {
+                SecurityTokenInvalidTypeException ex = new SecurityTokenInvalidTypeException(LogMessages.IDX10256) { InvalidType = null };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw ex;
+
+                throw LogHelper.LogExceptionMessage(ex);
+            }
 
             if (!validationParameters.ValidTypes.Contains(type, StringComparer.Ordinal))
             {
-                throw LogHelper.LogExceptionMessage(
-                    new SecurityTokenInvalidTypeException(LogHelper.FormatInvariant(LogMessages.IDX10257, LogHelper.MarkAsNonPII(type), Utility.SerializeAsSingleCommaDelimitedString(validationParameters.ValidTypes)))
-                    { InvalidType = type });
+                SecurityTokenInvalidTypeException ex = new SecurityTokenInvalidTypeException(LogHelper.FormatInvariant(LogMessages.IDX10257, LogHelper.MarkAsNonPII(type), Utility.SerializeAsSingleCommaDelimitedString(validationParameters.ValidTypes)))
+                {
+                    InvalidType = type
+                };
+
+                if (!validationParameters.LogValidationExceptions)
+                    throw ex;
+
+                throw LogHelper.LogExceptionMessage(ex);
             }
 
-            // if it reaches here, token type was succcessfully validated.
-            LogHelper.LogInformation(LogMessages.IDX10258, LogHelper.MarkAsNonPII(type));
+            // if it reaches here, token type was successfully validated.
+            if (LogHelper.IsEnabled(EventLogLevel.Informational))
+                LogHelper.LogInformation(LogMessages.IDX10258, LogHelper.MarkAsNonPII(type));
+
             return type;
         }
     }
